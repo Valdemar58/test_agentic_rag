@@ -332,6 +332,11 @@ class FakeGateway:
         self.get_calls: list[UUID] = []
         self.download_calls: list[tuple[UUID, UUID]] = []
         self.closed = False
+        self.connection_error: Exception | None = None
+
+    def check_connection(self) -> None:
+        if self.connection_error is not None:
+            raise self.connection_error
 
     def add(self, snapshot: CardSnapshot, contents: dict[str, bytes] | None = None) -> CardSnapshot:
         """Регистрирует карточку; contents — содержимое файлов по имени."""
@@ -401,7 +406,9 @@ def build_demo_scenario() -> tuple[FakeGateway, list[UUID]]:
                 terms_heading="Термины и определения",
             ),
             order_print: minimal_docx_bytes(["Приказ № 144 (печатная форма)"]),
-            order_pdf: minimal_pdf_bytes("Order 144"),
+            order_pdf: minimal_pdf_bytes(
+                "Order 144 on appointment of persons responsible for gas hazardous works"
+            ),
             "Подпись.sig": b"signature",
             scan_jpg: minimal_image_bytes(),
         },
@@ -412,9 +419,14 @@ def build_demo_scenario() -> tuple[FakeGateway, list[UUID]]:
             number="173",
             outgoing=[link(a), link(c, ref_type_name="изменяет", ref_type_reverse_name="изменён")],
             incoming=[link(a, ref_type_name=None, ref_type_reverse_name=None)],
-            files=[make_file(b, "Приказ 173.pdf")],
+            files=[make_file(b, "Приказ 173.pdf"), make_file(b, "Скан приказа 173.pdf")],
         ),
-        {"Приказ 173.pdf": minimal_pdf_bytes("Order 173")},
+        {
+            "Приказ 173.pdf": minimal_pdf_bytes(
+                "Order 173 cancelling order 144 and appointing new responsible persons"
+            ),
+            "Скан приказа 173.pdf": minimal_pdf_bytes(None),
+        },
     )
     gateway.add(
         make_snapshot(
@@ -456,7 +468,12 @@ def build_demo_scenario() -> tuple[FakeGateway, list[UUID]]:
             number="Д-1",
             files=[make_file(f, "Договор.pdf"), make_file(f, "Скан договора.pdf")],
         ),
-        {"Договор.pdf": minimal_pdf_bytes("Contract"), "Скан договора.pdf": minimal_pdf_bytes(None)},
+        {
+            "Договор.pdf": minimal_pdf_bytes(
+                "Supply contract No. D-1 between the company and the contractor"
+            ),
+            "Скан договора.pdf": minimal_pdf_bytes(None),
+        },
     )
     gateway.add(
         make_snapshot(

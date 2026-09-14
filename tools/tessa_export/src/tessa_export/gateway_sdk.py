@@ -80,6 +80,17 @@ class SdkGateway:
         )
         self._cards: Any = CardsResource(self._session, max_retries=tessa.max_retries)
 
+    def check_connection(self) -> None:
+        """Открывает сессию заранее, чтобы ошибка логина или сети была видна сразу и понятно."""
+        try:
+            self._auth.login()
+        except self._exc.TessaAuthenticationError as exc:
+            raise CardAccessError(f"Тесса отклонила логин/пароль (HTTP {exc.status_code}): {exc}") from exc
+        except (self._exc.TessaConnectionError, self._exc.TessaTimeoutError) as exc:
+            raise GatewayConnectionError(f"сервер Тессы недоступен: {exc}") from exc
+        except self._exc.TessaAPIError as exc:
+            raise GatewayError(f"ошибка входа в Тессу (HTTP {exc.status_code}): {exc}") from exc
+
     def get_card(self, card_id: UUID) -> CardSnapshot:
         request = self._get_request_cls(card_id=card_id, get_mode=self._read_only_mode)
         body = self._denormalize(request.model_dump(mode="python", by_alias=True, exclude_none=True))

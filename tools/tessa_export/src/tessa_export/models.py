@@ -105,6 +105,10 @@ class DownloadedContent:
 
 
 class TessaGateway(Protocol):
+    def check_connection(self) -> None:
+        """Проверяет доступ к серверу и учётные данные до начала обхода."""
+        ...
+
     def get_card(self, card_id: UUID) -> CardSnapshot: ...
 
     def download_file(self, card_id: UUID, file: FileInfo) -> DownloadedContent: ...
