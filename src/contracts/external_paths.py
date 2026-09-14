@@ -20,7 +20,7 @@ CARD_SERVICE_PACKAGE = "robot_skills"
 
 
 class ExternalPaths(BaseSettings):
-    """Пути к внешним репозиториям и локальным примерам данных."""
+    """Пути к внешним репозиториям SDK Тессы и сервиса карточек."""
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
@@ -29,10 +29,6 @@ class ExternalPaths(BaseSettings):
     )
     card_service_path: Path | None = Field(
         default=None, description="Корень репозитория сервиса карточек (пакет robot_skills лежит в src/)"
-    )
-    tessa_card_example_path: Path = Field(
-        default=Path("data/examples/card_response_example.json"),
-        description="Локальный пример сырого ответа Тессы cards/get; в репозиторий не коммитится",
     )
 
 

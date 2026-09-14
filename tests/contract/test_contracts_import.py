@@ -43,7 +43,9 @@ def test_card_data_schema_loaded(contract: CardServiceContract) -> None:
         assert name in fields, f"в CardData нет поля {name}"
 
 
-def test_card_data_from_real_example(contract: CardServiceContract, card_example_raw: dict[str, Any]) -> None:
+def test_card_data_from_anonymized_real_example(
+    contract: CardServiceContract, card_example_raw: dict[str, Any]
+) -> None:
     card = card_data_from_tessa_response(card_example_raw, contract)
     dumped = card.model_dump()
 
