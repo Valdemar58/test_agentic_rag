@@ -21,6 +21,10 @@ card_response_example.json
 models/
 hf_cache/
 
+# Собранные образы и артефакты для передачи заказчику
+dist/
+selftest_output/
+
 # Логи и служебные каталоги инструментов
 *.log
 .chainlit/
