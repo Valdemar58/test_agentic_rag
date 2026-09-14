@@ -31,6 +31,13 @@ class FileRecord:
     server_file_name: str | None = None
     skipped_reason: str | None = None
     skipped_detail: str = ""
+    # Признаки, которые заполняет проверка файлов (validation): None = не проверялось
+    smoke_ok: bool | None = None
+    smoke_error: str | None = None
+    has_text_layer: bool | None = None
+    page_count: int | None = None
+    has_tables: bool | None = None
+    has_terms_section: bool | None = None
 
     @property
     def downloaded(self) -> bool:
