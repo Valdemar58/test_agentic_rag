@@ -124,7 +124,7 @@ def main(argv: list[str]) -> int:
     payload = json.loads(source.read_text(encoding="utf-8"))
     result, persons = anonymize(payload)
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    target.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n")
     print(f"Обезличено персон: {persons}. Результат: {target}")
     return 0
 
