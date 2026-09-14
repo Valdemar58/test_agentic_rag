@@ -84,9 +84,14 @@ def download_card_files(
             logger.warning("Файл «%s» карточки %s пуст", file.name, card_id)
             continue
         name = safe_file_name(file.name or downloaded.file_name or "", used_names, str(file.row_id))
-        card_dir.mkdir(parents=True, exist_ok=True)
         target = card_dir / name
-        target.write_bytes(content)
+        try:
+            card_dir.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(content)
+        except OSError as exc:
+            record.skipped_reason, record.skipped_detail = SKIP_ERROR, f"не записан на диск: {exc}"
+            logger.warning("Файл «%s» карточки %s не записан на диск: %s", name, card_id, exc)
+            continue
         record.relative_path = f"{FILES_DIR}/{card_id}/{name}"
         record.sha256 = hashlib.sha256(content).hexdigest()
         record.size = len(content)

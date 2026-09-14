@@ -98,7 +98,36 @@ def test_safe_file_name_sanitizes_and_resolves_collisions() -> None:
     assert safe_file_name("", used, "id3") == "id3"
     assert safe_file_name("PASSWD.pdf", used, "id4") == "PASSWD__id4.pdf"
     long_name = "a" * 300 + ".pdf"
-    assert len(safe_file_name(long_name, used, "id5")) <= 150
+    assert len(safe_file_name(long_name, used, "id5")) <= 200
+
+
+def test_safe_file_name_limits_utf8_bytes_not_characters() -> None:
+    # реальный случай из контура: 150 символов кириллицы = ~290 байт UTF-8 > лимита ext4 в 255 байт
+    used: set[str] = set()
+    name = "1 б от 13.01.2025 О внесении изменений в приказы по направлению деятельности " * 3 + ".pdf"
+    first = safe_file_name(name, used, "id1")
+    assert first.endswith(".pdf") and first.startswith("1 б от 13.01.2025")
+    assert len(first.encode("utf-8")) <= 200
+    # коллизия с тем же длинным именем: суффикс добавляется, итог всё ещё в лимите файловой системы
+    second = safe_file_name(name, used, "0e2a1b6b-4d4d-4c0f-9d0e-2a3a5e6b7c8d")
+    assert second != first and second.endswith(".pdf")
+    assert len(second.encode("utf-8")) <= 255
+    # обрезка не ломает многобайтовый символ на границе
+    assert "�" not in first
+
+
+def test_disk_write_error_does_not_stop_export(tmp_path: Path) -> None:
+    gateway = FakeGateway()
+    card_id = uuid4()
+    file = make_file(card_id, "ok.pdf")
+    gateway.add(make_snapshot(card_id, files=[file]), {"ok.pdf": b"%PDF ok"})
+    # на месте каталога карточки лежит файл → mkdir/запись дают OSError
+    (tmp_path / "files").mkdir()
+    (tmp_path / "files" / str(card_id)).write_bytes(b"not a directory")
+    records = download_card_files(gateway, card_id, [file], ALLOWED, tmp_path)
+    assert records[0].skipped_reason == SKIP_ERROR
+    assert "не записан на диск" in records[0].skipped_detail
+    assert not records[0].downloaded
 
 
 def test_name_collision_within_card_keeps_both_files(tmp_path: Path) -> None:

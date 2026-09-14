@@ -31,7 +31,17 @@ REPORT_NAME = "validation_report.md"
 LOG_NAME = "tessa_export.log"
 
 _UNSAFE_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
-_MAX_NAME_LENGTH = 150
+# Лимит имени файла в ext4/NTFS — 255 байт/символов; кириллица в UTF-8 занимает 2 байта на символ.
+# Запас нужен под суффикс коллизии «__<uuid>» (38 байт): 200 + 38 < 255.
+_MAX_NAME_BYTES = 200
+
+
+def _truncate_utf8(text: str, max_bytes: int) -> str:
+    """Обрезает строку так, чтобы её UTF-8 представление не превышало max_bytes байт."""
+    encoded = text.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return text
+    return encoded[:max_bytes].decode("utf-8", errors="ignore").rstrip(" .")
 
 
 def _json_default(value: Any) -> Any:
@@ -64,17 +74,16 @@ def save_card(export_root: Path, snapshot: CardSnapshot) -> tuple[Path, Path]:
 
 
 def safe_file_name(name: str, used: set[str], fallback: str) -> str:
-    """Имя файла без разделителей путей и запрещённых символов; при коллизии добавляется fallback."""
+    """Имя файла без разделителей путей и запрещённых символов, не длиннее лимита файловой
+    системы (в байтах UTF-8, расширение сохраняется); при коллизии добавляется fallback."""
     base = Path(name.replace("\\", "/")).name if name else ""
     base = _UNSAFE_CHARS.sub("_", base).strip(" .")
     if not base or base in {".", ".."}:
         base = fallback
-    if len(base) > _MAX_NAME_LENGTH:
-        suffix = Path(base).suffix
-        base = base[: _MAX_NAME_LENGTH - len(suffix)] + suffix
-    candidate = base
+    stem, suffix = Path(base).stem, Path(base).suffix
+    stem = _truncate_utf8(stem, _MAX_NAME_BYTES - len(suffix.encode("utf-8"))) or fallback
+    candidate = f"{stem}{suffix}"
     if candidate.casefold() in used:
-        stem, suffix = Path(base).stem, Path(base).suffix
         candidate = f"{stem}__{fallback}{suffix}"
     used.add(candidate.casefold())
     return candidate
