@@ -34,6 +34,7 @@ class FileRecord:
     # Признаки, которые заполняет проверка файлов (validation): None = не проверялось
     smoke_ok: bool | None = None
     smoke_error: str | None = None
+    smoke_note: str | None = None
     has_text_layer: bool | None = None
     page_count: int | None = None
     has_tables: bool | None = None

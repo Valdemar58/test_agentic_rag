@@ -75,15 +75,28 @@ def check_files_downloaded(manifest: Manifest) -> Check:
 
 
 def check_files_open(manifest: Manifest) -> Check:
+    downloaded = [
+        (document, file) for document in manifest.documents for file in document.files if file.downloaded
+    ]
     broken = [
         f"{_label(document)}: «{file.name}» — {file.smoke_error}"
-        for document in manifest.documents
-        for file in document.files
-        if file.downloaded and file.smoke_ok is False
+        for document, file in downloaded
+        if file.smoke_ok is False
     ]
-    total = sum(1 for document in manifest.documents for file in document.files if file.downloaded)
+    noted = [
+        f"{_label(document)}: «{file.name}» — {file.smoke_note}"
+        for document, file in downloaded
+        if file.smoke_ok and file.smoke_note
+    ]
+    total = len(downloaded)
     if broken:
         return Check("Файлы открываются", "FAIL", f"не открываются {len(broken)} из {total}", broken)
+    if noted:
+        summary = (
+            f"открыты все {total}; {len(noted)} из них только прямым разбором OOXML "
+            "(python-docx, а значит и Docling, их не читает — учесть в инжесте)"
+        )
+        return Check("Файлы открываются", "WARN", summary, noted)
     return Check("Файлы открываются", "PASS", f"открыты все {total} скачанных файла(ов)")
 
 

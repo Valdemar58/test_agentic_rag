@@ -55,6 +55,9 @@ class FileEntry(_Model):
     skipped_detail: str = ""
     smoke_ok: bool | None = None
     smoke_error: str | None = None
+    smoke_note: str | None = Field(
+        default=None, description="Файл открыт, но с оговоркой (например, python-docx его не разбирает)"
+    )
     has_text_layer: bool | None = None
     page_count: int | None = None
     has_tables: bool | None = None
@@ -217,6 +220,7 @@ def _file_entry(record: FileRecord) -> FileEntry:
         skipped_detail=record.skipped_detail,
         smoke_ok=record.smoke_ok,
         smoke_error=record.smoke_error,
+        smoke_note=record.smoke_note,
         has_text_layer=record.has_text_layer,
         page_count=record.page_count,
         has_tables=record.has_tables,

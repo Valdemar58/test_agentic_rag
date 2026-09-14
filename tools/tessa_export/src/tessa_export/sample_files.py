@@ -4,9 +4,16 @@
 from __future__ import annotations
 
 import io
+import zipfile
 
 from docx import Document
 from PIL import Image
+
+ALTCHUNK_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/aFChunk"
+WML_MAIN_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"
+CONTENT_TYPES_PART = "[Content_Types].xml"
+DOCUMENT_RELS_PART = "word/_rels/document.xml.rels"
+DOCUMENT_PART = "word/document.xml"
 
 
 def minimal_pdf_bytes(text: str | None) -> bytes:
@@ -59,6 +66,48 @@ def minimal_docx_bytes(
     buffer = io.BytesIO()
     document.save(buffer)
     return buffer.getvalue()
+
+
+def _rewrite_docx(data: bytes, edits: dict[str, bytes], extra: dict[str, bytes]) -> bytes:
+    """Пересобирает zip-пакет DOCX: части из edits заменяются, части из extra добавляются."""
+    buffer = io.BytesIO()
+    with (
+        zipfile.ZipFile(io.BytesIO(data)) as source,
+        zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as target,
+    ):
+        for info in source.infolist():
+            target.writestr(info.filename, edits.get(info.filename, source.read(info.filename)))
+        for name, blob in extra.items():
+            target.writestr(name, blob)
+    return buffer.getvalue()
+
+
+def docx_with_misdeclared_altchunk_bytes(paragraphs: list[str], *, with_table: bool = False) -> bytes:
+    """DOCX, как его делает шаблонизатор Тессы для файлов «Для печати_…»: вложенный altChunk-docx
+    объявлен в [Content_Types].xml как XML-часть главного документа. Word открывает, python-docx — нет
+    (реальный случай из экспорта заказчика 2026-09-14)."""
+    base = minimal_docx_bytes(paragraphs, with_table=with_table)
+    with zipfile.ZipFile(io.BytesIO(base)) as package:
+        content_types = package.read(CONTENT_TYPES_PART).decode("utf-8")
+        rels = package.read(DOCUMENT_RELS_PART).decode("utf-8")
+    content_types = content_types.replace(
+        "</Types>", f'<Default Extension="docx" ContentType="{WML_MAIN_CONTENT_TYPE}"/></Types>'
+    )
+    rels = rels.replace(
+        "</Relationships>",
+        f'<Relationship Id="AltChunkId1" Type="{ALTCHUNK_REL_TYPE}" Target="/word/afchunk1.docx"/>'
+        "</Relationships>",
+    )
+    return _rewrite_docx(
+        base,
+        {CONTENT_TYPES_PART: content_types.encode("utf-8"), DOCUMENT_RELS_PART: rels.encode("utf-8")},
+        {"word/afchunk1.docx": minimal_docx_bytes(["Блок электронной подписи"])},
+    )
+
+
+def docx_with_broken_part_bytes() -> bytes:
+    """DOCX с испорченным word/document.xml — действительно битый файл."""
+    return _rewrite_docx(minimal_docx_bytes(["x"]), {DOCUMENT_PART: b"\x00\x01 not xml at all"}, {})
 
 
 def minimal_image_bytes(image_format: str = "JPEG") -> bytes:

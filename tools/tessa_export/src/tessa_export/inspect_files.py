@@ -6,6 +6,8 @@ from __future__ import annotations
 import io
 import logging
 import re
+import xml.etree.ElementTree as ET
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import UUID
@@ -19,11 +21,16 @@ MIN_TEXT_CHARS_PER_PAGE = 20
 MAX_PDF_PAGES_TO_SCAN = 30
 MAX_HEADING_LENGTH = 120
 
+WORD_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+CONTENT_TYPES_PART = "[Content_Types].xml"
+DOCUMENT_PART = "word/document.xml"
+
 
 @dataclass(frozen=True)
 class FileInspection:
     smoke_ok: bool
     smoke_error: str | None = None
+    smoke_note: str | None = None
     has_text_layer: bool | None = None
     page_count: int | None = None
     has_tables: bool | None = None
@@ -60,7 +67,7 @@ def _inspect_pdf(data: bytes, patterns: list[re.Pattern[str]]) -> FileInspection
     )
 
 
-def _inspect_docx(data: bytes, patterns: list[re.Pattern[str]]) -> FileInspection:
+def _inspect_docx_with_python_docx(data: bytes, patterns: list[re.Pattern[str]]) -> FileInspection:
     from docx import Document
 
     document = Document(io.BytesIO(data))
@@ -71,6 +78,41 @@ def _inspect_docx(data: bytes, patterns: list[re.Pattern[str]]) -> FileInspectio
         has_tables=len(document.tables) > 0,
         has_terms_section=_terms_found(lines, patterns),
     )
+
+
+def _inspect_ooxml_directly(
+    data: bytes, patterns: list[re.Pattern[str]], python_docx_error: str
+) -> FileInspection:
+    """Проверка пакета OOXML без python-docx: zip открывается, [Content_Types].xml и word/document.xml
+    разбираются как XML; таблицы и раздел терминов ищутся по элементам w:tbl / w:p."""
+    with zipfile.ZipFile(io.BytesIO(data)) as package:
+        ET.fromstring(package.read(CONTENT_TYPES_PART))
+        root = ET.fromstring(package.read(DOCUMENT_PART))
+    lines = [
+        "".join(run.text or "" for run in paragraph.iter(f"{{{WORD_NS}}}t"))
+        for paragraph in root.iter(f"{{{WORD_NS}}}p")
+    ]
+    return FileInspection(
+        smoke_ok=True,
+        smoke_note=(
+            f"python-docx не разбирает файл ({python_docx_error}); пакет OOXML целый, разобран напрямую"
+        ),
+        has_text_layer=True,
+        has_tables=next(root.iter(f"{{{WORD_NS}}}tbl"), None) is not None,
+        has_terms_section=_terms_found(lines, patterns),
+    )
+
+
+def _inspect_docx(data: bytes, patterns: list[re.Pattern[str]]) -> FileInspection:
+    try:
+        return _inspect_docx_with_python_docx(data, patterns)
+    except Exception as exc:  # noqa: BLE001 — любая ошибка python-docx: проверяем пакет напрямую
+        # Шаблонизатор Тессы («Для печати_…») объявляет вложенный altChunk-docx как XML-часть главного
+        # документа; Word такой файл открывает, python-docx (и Docling поверх него) — нет.
+        try:
+            return _inspect_ooxml_directly(data, patterns, f"{type(exc).__name__}: {exc}")
+        except Exception:  # noqa: BLE001 — пакет действительно битый: наружу идёт исходная ошибка
+            raise exc from None
 
 
 def _inspect_xlsx(data: bytes) -> FileInspection:
@@ -151,6 +193,7 @@ def inspect_records(
             )
             record.smoke_ok = inspection.smoke_ok
             record.smoke_error = inspection.smoke_error
+            record.smoke_note = inspection.smoke_note
             record.has_text_layer = inspection.has_text_layer
             record.page_count = inspection.page_count
             record.has_tables = inspection.has_tables
@@ -162,3 +205,5 @@ def inspect_records(
                     card_id,
                     inspection.smoke_error,
                 )
+            elif inspection.smoke_note:
+                logger.info("Файл «%s» карточки %s: %s", record.file.name, card_id, inspection.smoke_note)
