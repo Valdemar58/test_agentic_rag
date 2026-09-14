@@ -45,7 +45,16 @@ dev = [
     "pytest-asyncio>=0.24",
     "respx>=0.22",
     "types-pyyaml",
+    "types-openpyxl",
+    # Экспорт-скрипт — отдельный workspace-пакет с лёгкими зависимостями (для Docker-образа заказчика)
+    "tessa-export",
 ]
+
+[tool.uv.workspace]
+members = ["tools/tessa_export"]
+
+[tool.uv.sources]
+tessa-export = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]
@@ -58,22 +67,33 @@ sources = ["src"]
 [tool.ruff]
 line-length = 110
 target-version = "py313"
-src = ["src", "tests", "tools", "scripts", "mocks"]
+src = ["src", "tests", "tools/tessa_export/src", "scripts", "mocks"]
 extend-exclude = ["data", "eval/reports"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["common", "contracts", "db", "ingest", "mcp_server", "agent", "ui", "eval", "tools", "mocks"]
+known-first-party = [
+    "common",
+    "contracts",
+    "db",
+    "ingest",
+    "mcp_server",
+    "agent",
+    "ui",
+    "eval",
+    "tessa_export",
+    "mocks",
+]
 
 [tool.mypy]
 python_version = "3.13"
 strict = true
 plugins = ["pydantic.mypy"]
-mypy_path = "src"
-# Каталоги tools и mocks добавляются в список при их появлении (этапы 2 и 5)
-files = ["src", "scripts", "tests"]
+mypy_path = "src,tools/tessa_export/src"
+# Каталог mocks добавляется в список при его появлении (этап 5)
+files = ["src", "scripts", "tests", "tools/tessa_export/src"]
 namespace_packages = true
 explicit_package_bases = true
 exclude = ["^data/", "^\\.venv/"]
@@ -93,6 +113,8 @@ module = [
     "fastmcp.*",
     "tessa_client.*",
     "robot_skills.*",
+    "docx.*",
+    "pptx.*",
 ]
 ignore_missing_imports = true
 

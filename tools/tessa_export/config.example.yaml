@@ -1,0 +1,50 @@
+# Конфиг экспорт-скрипта. Скопируйте в config.yaml и заполните tessa.base_url.
+# Логин и пароль НЕ пишутся в файл: они берутся из переменных окружения
+# TESSA_USERNAME (формат ДОМЕН\пользователь) и TESSA_PASSWORD.
+
+tessa:
+  base_url: https://tessa.example.local
+  verify_tls: true
+  ca_bundle: null            # путь к корпоративному CA, если понадобится
+  tessa_version: "4.2"
+  timeout_seconds: 60
+  max_retries: 2
+
+external:
+  # В Docker-образе эти пути уже заполнены при сборке. Менять не нужно.
+  tessa_sdk_path: /opt/external/tessa_sdk
+  card_service_path: /opt/external/robot_skills
+
+seed_file: seed_cards.yaml   # относительно каталога конфига
+output_dir: /output          # в Docker сюда монтируется папка результата
+archive_name: tessa_export.zip
+
+traversal:
+  max_depth: 2               # глубина рекурсии от seed-документа
+  max_docs: 200              # предохранительный лимит документов
+  directions: [outgoing, incoming]
+
+# Правила исключения (по решению заказчика документов с ограничениями нет, список пуст).
+# Пример:
+#   - reason: "кадровые приказы"
+#     doc_type_titles: ["Кадровый приказ"]
+#   - reason: "по статусу"
+#     field: DocumentCommonInfo.StatusID
+#     values: ["00000000-0000-0000-0000-000000000000"]
+exclude_rules: []
+
+files:
+  allowed_extensions: [pdf, docx, xlsx, pptx, png, jpg, jpeg, tif, tiff, bmp, gif]
+  # doc и xls пока не обрабатываются (решение заказчика). Чтобы включить — добавьте сюда.
+
+# Ориентиры покрытия из раздела 8.2 ТЗ. Дефицит — предупреждение в отчёте, не ошибка.
+coverage:
+  doc_kind_map:
+    "Приказы": ["приказ"]
+    "Положения / ЛНА": ["положени", "регламент", "политик", "стандарт", "лна"]
+    "Инструкции": ["инструкц"]
+    "Договоры": ["договор", "соглашени", "контракт"]
+    "Акты": ["\\bакт"]
+    "Служебные записки": ["служебн", "записк"]
+
+log_level: INFO
