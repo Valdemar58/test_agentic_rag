@@ -68,6 +68,7 @@ uv run check        # то же, кроссплатформенно (на Window
 - Зеркалим конвенции сервиса заказчика: ruff `E,F,I,UP,B`, line-length 110; mypy strict + pydantic plugin; async SQLAlchemy 2.0 с naming convention; Alembic-ревизии `0001_slug.py`.
 - Тесты: `tests/unit`, `tests/contract`, `tests/integration`, `tests/e2e`; фейки вместо `unittest.mock` там, где есть протокол.
 - Коммиты атомарные, по одной задаче; после каждого этапа — работающее состояние.
+- Сообщение коммита — одна короткая строка на русском с номером задачи («Этап 2.5: манифест и граф связей»), без тела и без подписей авторства (никаких Co-Authored-By и подобных трейлеров).
 
 ## Внешние пути
 
