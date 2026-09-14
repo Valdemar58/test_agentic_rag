@@ -1,0 +1,6 @@
+# В репозитории всегда LF: Makefile, Dockerfile и shell-скрипты не работают с CRLF.
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.pdf binary
+*.docx binary

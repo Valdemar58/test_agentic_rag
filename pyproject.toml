@@ -1,0 +1,112 @@
+[project]
+name = "agentic-rag"
+version = "0.1.0"
+description = "Агентский RAG по документам СЭД Тесса, этап MVP"
+readme = "README.md"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    # Базовые
+    "pydantic>=2.9,<3",
+    "pydantic-settings>=2.6",
+    "httpx>=0.28,<1",
+    "structlog>=24.1",
+    "pyyaml>=6.0",
+    # Прикладная БД: только ORM + миграции
+    "sqlalchemy[asyncio]>=2.0",
+    "asyncpg>=0.30",
+    "alembic>=1.14",
+    # Векторная БД и модели эмбеддингов/reranker
+    "qdrant-client>=1.12",
+    "torch>=2.6",
+    "transformers>=4.45",
+    "sentence-transformers>=3.0",
+    # Парсинг документов
+    "docling>=2.40",
+    # Агент и инструменты
+    "llama-index-core>=0.12",
+    "llama-index-llms-openai-like>=0.3",
+    "llama-index-tools-mcp>=0.2",
+    "mcp>=1.2",
+    "fastmcp>=2.0",
+    # Наблюдаемость
+    "langfuse>=3.0",
+    "openinference-instrumentation-llama-index>=4.0",
+    # HTTP-сервисы и UI
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "chainlit>=2.6",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.7",
+    "mypy>=1.13",
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "respx>=0.22",
+    "types-pyyaml",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+only-include = ["src"]
+sources = ["src"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py313"
+src = ["src", "tests", "tools", "scripts", "mocks"]
+extend-exclude = ["data", "eval/reports"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["common", "contracts", "db", "ingest", "mcp_server", "agent", "ui", "eval", "tools", "mocks"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+plugins = ["pydantic.mypy"]
+mypy_path = "src"
+# Каталоги tools и mocks добавляются в список при их появлении (этапы 2 и 5)
+files = ["src", "scripts", "tests"]
+namespace_packages = true
+explicit_package_bases = true
+exclude = ["^data/", "^\\.venv/"]
+
+[[tool.mypy.overrides]]
+# Сторонние библиотеки без полных аннотаций и внешний код по путям (§8.0 ТЗ)
+module = [
+    "llama_index.*",
+    "docling.*",
+    "docling_core.*",
+    "chainlit.*",
+    "langfuse.*",
+    "openinference.*",
+    "transformers.*",
+    "sentence_transformers.*",
+    "FlagEmbedding.*",
+    "fastmcp.*",
+    "tessa_client.*",
+    "robot_skills.*",
+]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["tests.*"]
+disallow_untyped_decorators = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--import-mode=importlib -ra"
+asyncio_mode = "auto"
+markers = [
+    "contract: тесты, требующие внешних путей TESSA_SDK_PATH и CARD_SERVICE_PATH",
+    "integration: тесты, требующие поднятого стенда (docker compose)",
+    "gpu: тесты, требующие GPU и vLLM",
+    "e2e: сквозные сценарии",
+]
