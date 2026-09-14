@@ -41,6 +41,8 @@ def test_example_config_is_valid() -> None:
     assert config.exclude_rules == []
     assert "pdf" in config.files.allowed_extensions
     assert "doc" not in config.files.allowed_extensions
+    # у заказчика нет CA сервера Тессы: проверка сертификата выключена и в примере, и по умолчанию
+    assert config.tessa.verify_tls is False and config.tessa.ca_bundle is None
     assert config.coverage.cancelled_status_ids == [CANCELLED_STATUS_ID]
 
 
@@ -57,6 +59,7 @@ def test_minimal_config_defaults_and_relative_paths(tmp_path: Path) -> None:
     assert config.seed_file == tmp_path / "seed_cards.yaml"
     assert config.output_dir == tmp_path / "output"
     assert config.tessa.tessa_version == "4.2"
+    assert config.tessa.verify_tls is False
 
 
 def test_missing_required_field_gives_readable_error(tmp_path: Path) -> None:

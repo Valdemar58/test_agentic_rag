@@ -4,8 +4,8 @@
 
 tessa:
   base_url: https://tessa.example.local
-  verify_tls: true
-  ca_bundle: null            # путь к корпоративному CA, если понадобится
+  verify_tls: false          # у заказчика нет CA сервера Тессы; true — только вместе с ca_bundle
+  ca_bundle: null            # путь к корпоративному CA; если задан, проверка идёт по нему
   tessa_version: "4.2"
   timeout_seconds: 60
   max_retries: 2

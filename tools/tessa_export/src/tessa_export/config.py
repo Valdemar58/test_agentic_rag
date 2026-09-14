@@ -33,8 +33,13 @@ class TessaSettings(StrictModel):
     base_url: str = Field(description="Адрес сервера Тессы, например https://tessa.company.local")
     username_env: str = Field(default="TESSA_USERNAME", description="Имя переменной окружения с логином")
     password_env: str = Field(default="TESSA_PASSWORD", description="Имя переменной окружения с паролем")
-    verify_tls: bool = Field(default=True, description="Проверять TLS-сертификат сервера")
-    ca_bundle: Path | None = Field(default=None, description="Путь к корпоративному CA, если нужен")
+    verify_tls: bool = Field(
+        default=False,
+        description="Проверять TLS-сертификат сервера. Выключено: у заказчика нет CA сервера Тессы",
+    )
+    ca_bundle: Path | None = Field(
+        default=None, description="Путь к корпоративному CA; если задан, проверка включается по нему"
+    )
     tessa_version: str = Field(default="4.2", description="Значение заголовка tessa-version")
     timeout_seconds: float = Field(default=60.0, gt=0, description="Тайм-аут HTTP-запроса")
     max_retries: int = Field(default=2, ge=0, description="Повторы при обрыве соединения")

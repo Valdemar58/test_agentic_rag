@@ -1,9 +1,9 @@
 # Build the tessa-export image and save it for the customer (Windows PowerShell).
 # ASCII only: Windows PowerShell 5.1 reads scripts without BOM in the ANSI code page,
 # so non-ASCII characters break parsing.
-# Usage: powershell -File tools/tessa_export/build_image.ps1 [-Version 0.1.0]
+# Usage: powershell -File tools/tessa_export/build_image.ps1 [-Version 0.1.1]
 # TESSA_SDK_PATH and CARD_SERVICE_PATH come from the environment or from .env in the repo root.
-param([string]$Version = "0.1.0")
+param([string]$Version = "0.1.1")
 
 $ErrorActionPreference = "Stop"
 $root = Resolve-Path (Join-Path $PSScriptRoot "..\..")

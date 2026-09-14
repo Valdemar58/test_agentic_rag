@@ -34,6 +34,17 @@ from tessa_export.models import (
 
 CARDS_GET_PATH = "/api/v1/cards/get"
 _RETRY_DELAY_SECONDS = 0.5
+_TLS_ERROR_MARKER = "CERTIFICATE_VERIFY_FAILED"
+
+
+def _tls_hint(exc: BaseException) -> str:
+    """Подсказка к ошибке проверки сертификата: что поправить в конфиге."""
+    if _TLS_ERROR_MARKER not in str(exc):
+        return ""
+    return (
+        ". Сертификат сервера не прошёл проверку: укажите в config.yaml `tessa.verify_tls: false`"
+        " или путь к корпоративному CA в `tessa.ca_bundle`"
+    )
 
 
 class SdkGateway:
@@ -87,7 +98,7 @@ class SdkGateway:
         except self._exc.TessaAuthenticationError as exc:
             raise CardAccessError(f"Тесса отклонила логин/пароль (HTTP {exc.status_code}): {exc}") from exc
         except (self._exc.TessaConnectionError, self._exc.TessaTimeoutError) as exc:
-            raise GatewayConnectionError(f"сервер Тессы недоступен: {exc}") from exc
+            raise GatewayConnectionError(f"сервер Тессы недоступен: {exc}{_tls_hint(exc)}") from exc
         except self._exc.TessaAPIError as exc:
             raise GatewayError(f"ошибка входа в Тессу (HTTP {exc.status_code}): {exc}") from exc
 

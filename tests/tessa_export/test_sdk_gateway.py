@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import ssl
 from collections.abc import Iterator
 from typing import Any
 from urllib.parse import quote
@@ -16,7 +17,7 @@ from contracts.card_service import CardServiceContract
 from contracts.external_paths import ExternalPaths
 from tessa_export.config import ExportConfig
 from tessa_export.gateway_sdk import SdkGateway
-from tessa_export.models import CardAccessError, CardNotFoundError, GatewayError
+from tessa_export.models import CardAccessError, CardNotFoundError, GatewayConnectionError, GatewayError
 
 pytestmark = pytest.mark.contract
 
@@ -103,6 +104,32 @@ def test_download_file_uses_sdk_and_keeps_cyrillic_name(gateway: SdkGateway, tes
     body = json.loads(tessa["file_content"].calls.last.request.content)
     assert body["FileID::uid"] == str(file.row_id)
     assert body["VersionRowID::uid"] == str(file.version_row_id)
+
+
+def test_tls_verification_is_off_by_default_and_error_gives_hint(
+    gateway: SdkGateway, tessa: respx.MockRouter
+) -> None:
+    # verify=False доходит и до клиента логина внутри SDK, и до клиента запросов
+    clients: list[Any] = [gateway._auth._login_client, gateway._session]
+    for client in clients:
+        assert client._transport._pool._ssl_context.verify_mode == ssl.CERT_NONE
+
+    tessa["login"].mock(
+        side_effect=httpx.ConnectError(
+            "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: "
+            "unable to get local issuer certificate (_ssl.c:1032)"
+        )
+    )
+    with pytest.raises(GatewayConnectionError) as exc_info:
+        gateway.check_connection()
+    message = str(exc_info.value)
+    assert "CERTIFICATE_VERIFY_FAILED" in message
+    assert "tessa.verify_tls: false" in message and "tessa.ca_bundle" in message
+
+    tessa["login"].mock(side_effect=httpx.ConnectError("[Errno -2] Name or service not known"))
+    with pytest.raises(GatewayConnectionError) as exc_info:
+        gateway.check_connection()
+    assert "verify_tls" not in str(exc_info.value)
 
 
 def test_error_mapping(gateway: SdkGateway, tessa: respx.MockRouter) -> None:

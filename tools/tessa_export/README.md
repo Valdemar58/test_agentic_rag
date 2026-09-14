@@ -22,7 +22,7 @@ links_graph.json + validation_report.md`. Ничего в Тессе не изм
 1. Загрузить образ:
 
    ```bash
-   docker load -i tessa-export-0.1.0.tar
+   docker load -i tessa-export-0.1.1.tar
    ```
 
 2. Положить рядом папки `config/` и `output/`. В `config/` — `config.yaml` и `seed_cards.yaml`.
@@ -40,7 +40,7 @@ links_graph.json + validation_report.md`. Ничего в Тессе не изм
 4. Проверить контейнер без доступа к Тессе (самопроверка на синтетических данных, ~10 секунд):
 
    ```bash
-   docker run --rm -v "$PWD/output:/output" tessa-export:0.1.0 self-test --output /output/selftest
+   docker run --rm -v "$PWD/output:/output" tessa-export:0.1.1 self-test --output /output/selftest
    ```
 
    Ожидаемый вывод заканчивается строкой `ИТОГ: сет ПРИГОДЕН`.
@@ -50,7 +50,7 @@ links_graph.json + validation_report.md`. Ничего в Тессе не изм
    ```bash
    docker run --rm --env-file tessa.env \
      -v "$PWD/config:/config:ro" -v "$PWD/output:/output" \
-     tessa-export:0.1.0 run --config /config/config.yaml
+     tessa-export:0.1.1 run --config /config/config.yaml
    ```
 
    Ход работы печатается на экран, полный лог — `output/tessa_export.log`.
@@ -79,8 +79,11 @@ links_graph.json + validation_report.md`. Ничего в Тессе не изм
 - `files.allowed_extensions` — какие файлы скачивать (по умолчанию pdf, docx, xlsx, pptx и
   изображения; `doc` и `xls` выключены).
 - `exclude_rules` — правила исключения документов (по умолчанию пусто).
-- `tessa.verify_tls: false` или `tessa.ca_bundle` — только если сервер Тессы использует
-  нестандартный сертификат.
+- `tessa.verify_tls` — проверка TLS-сертификата сервера Тессы. По умолчанию выключена
+  (`false`), потому что CA сервера в контуре нет. Чтобы включить, положите файл CA рядом
+  с конфигом, смонтируйте его в контейнер и укажите путь в `tessa.ca_bundle`.
+  Ошибка `CERTIFICATE_VERIFY_FAILED` при запуске означает, что в вашем `config.yaml`
+  стоит `verify_tls: true` без `ca_bundle`.
 
 Повторный запуск полностью перезаписывает `output/export/` и архив.
 
@@ -89,8 +92,8 @@ links_graph.json + validation_report.md`. Ничего в Тессе не изм
 Из корня репозитория, с заданными `TESSA_SDK_PATH` и `CARD_SERVICE_PATH` (в `.env`):
 
 ```
-pwsh tools/tessa_export/build_image.ps1 -Version 0.1.0     # Windows
-tools/tessa_export/build_image.sh 0.1.0                     # Linux/macOS
+pwsh tools/tessa_export/build_image.ps1 -Version 0.1.1     # Windows
+tools/tessa_export/build_image.sh 0.1.1                     # Linux/macOS
 ```
 
 Скрипт собирает образ (SDK Тессы и схемы сервиса карточек подключаются через build-context и
