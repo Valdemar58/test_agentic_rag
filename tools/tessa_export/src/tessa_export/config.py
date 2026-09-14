@@ -117,16 +117,28 @@ class FilesSettings(StrictModel):
 class CoverageSettings(StrictModel):
     """Ориентиры состава корпуса из раздела 8.2 ТЗ. Дефицит даёт предупреждение, не ошибку."""
 
-    doc_kind_map: dict[str, list[str]] = Field(
+    coverage_kind_map: dict[str, list[str]] = Field(
         default={
             "Приказы": ["приказ"],
-            "Положения / ЛНА": ["положени", "регламент", "политик", "стандарт", "лна"],
+            "Положения / ЛНА": [
+                "положени",
+                "регламент",
+                "правил",
+                r"\bпвтр\b",
+                "политик",
+                "стандарт",
+                r"\bлна\b",
+            ],
             "Инструкции": ["инструкц"],
             "Договоры": ["договор", "соглашени", "контракт"],
-            "Акты": [r"\bакт"],
+            "Акты": [r"\bакт(а|ы|ов|е|у|ом|ах|ами)?\b"],
             "Служебные записки": ["служебн", "записк"],
         },
-        description="Категория чек-листа → регэкспы (без учёта регистра) над DocTypeTitle/TypeCaption",
+        description=(
+            "Категория 8.2 (по содержанию) → регэкспы без учёта регистра над DocTypeTitle, TypeCaption "
+            "и Subject; документ может попасть в несколько категорий. В индекс эти категории не идут, "
+            "там используется категория Тессы (DocTypeTitle)"
+        ),
     )
     other_kind_label: str = Field(default="Прочие виды", description="Категория для несопоставленных")
     targets: dict[str, int] = Field(
@@ -152,12 +164,37 @@ class CoverageSettings(StrictModel):
     min_scan_share: float = Field(default=0.15, description="Доля сканов")
     min_docs_with_tables: int = Field(default=10, description="Документов с таблицами")
     min_date_span_years: int = Field(default=3, description="Разброс дат документов, лет")
-    cancelled_status_ids: list[UUID] = Field(
-        default=[CANCELLED_STATUS_ID], description="Значения StatusID, означающие «отменён»"
-    )
     terms_section_patterns: list[str] = Field(
         default=["термины и определения", "термины, определения", "сокращения", "используемые термины"],
         description="Регэкспы заголовков раздела терминов",
+    )
+
+
+class StatusSettings(StrictModel):
+    """Правило статуса документа для фильтра «только действующие» (FR-3, вопрос О1).
+
+    В карточке три независимых признака: StatusID (справочник статусов; есть у приказов и договоров),
+    StateID/StateName (состояние маршрута Kr; есть у всех типов) и статус согласования.
+    Статус документа: cancelled, если StatusID в cancelled_status_ids или StateID в cancelled_state_ids;
+    иначе active, если StateID в active_state_ids; иначе draft (не вступил в силу / в работе).
+    """
+
+    cancelled_status_ids: list[UUID] = Field(
+        default=[CANCELLED_STATUS_ID], description="Значения StatusID, означающие «отменён»"
+    )
+    cancelled_state_ids: list[int] = Field(
+        default=[5, 17, 21],
+        description=(
+            "StateID, означающие отмену: 5 $KrStates_Doc_Canceled, 17 Аннулирован, "
+            "21 На подтверждении аннулирования"
+        ),
+    )
+    active_state_ids: list[int] = Field(
+        default=[6, 8, 11, 12, 13, 18, 19],
+        description=(
+            "StateID действующего документа: 6 Registered, 8 Signed, 11 На исполнении, 12 Исполнено, "
+            "13 Списан в дело, 18 Добавление скана, 19 На хранении"
+        ),
     )
 
 
@@ -171,6 +208,7 @@ class ExportConfig(StrictModel):
     exclude_rules: list[ExcludeRule] = Field(default_factory=list)
     files: FilesSettings = Field(default_factory=FilesSettings)
     coverage: CoverageSettings = Field(default_factory=CoverageSettings)
+    status: StatusSettings = Field(default_factory=StatusSettings)
     log_level: str = Field(default="INFO", description="Уровень логирования")
 
     def resolve_credentials(self) -> tuple[str, str]:

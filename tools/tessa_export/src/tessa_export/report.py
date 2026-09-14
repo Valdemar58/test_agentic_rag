@@ -50,6 +50,8 @@ def render_report(manifest: Manifest, report: ValidationReport) -> str:
         f"| Файлов-дублей по хэшу | {manifest.stats.duplicate_files} |",
         f"| Непройденных связей | {manifest.stats.skipped_links} |",
         "",
+        "Таблица для ручного отбора состава сета: `documents_review.csv` рядом с этим отчётом.",
+        "",
         "## Проверки 8.3",
         "",
         "| Статус | Проверка | Результат |",
@@ -72,9 +74,19 @@ def render_report(manifest: Manifest, report: ValidationReport) -> str:
         mark = "✅" if row.ok else "⚠️"
         lines.append(f"| {mark} | {row.name} | {row.target} | {row.actual} | {'' if row.ok else row.hint} |")
 
-    lines += ["", "## Состав по видам документов", "", "| Вид | Документов |", "|---|---|"]
+    lines += ["", "## Состав сета", "", "| Категория Тессы (DocTypeTitle) | Документов |", "|---|---|"]
     for kind, count in sorted(manifest.stats.doc_kinds.items(), key=lambda item: -item[1]):
         lines.append(f"| {kind} | {count} |")
+    lines += [
+        "",
+        "| Категория 8.2 по виду и теме (документ может быть в нескольких) | Документов |",
+        "|---|---|",
+    ]
+    for kind, count in sorted(manifest.stats.coverage_kinds.items(), key=lambda item: -item[1]):
+        lines.append(f"| {kind} | {count} |")
+    lines += ["", "| Статус документа (правило `status` конфига) | Документов |", "|---|---|"]
+    for status, count in sorted(manifest.stats.doc_statuses.items(), key=lambda item: -item[1]):
+        lines.append(f"| {status} | {count} |")
     lines += ["", "| Тип карточки | Документов |", "|---|---|"]
     for type_name, count in sorted(manifest.stats.card_types.items(), key=lambda item: -item[1]):
         lines.append(f"| {type_name} | {count} |")

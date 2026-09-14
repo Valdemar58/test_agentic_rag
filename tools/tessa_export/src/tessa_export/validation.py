@@ -185,9 +185,11 @@ def _is_scan(file_extension: str, has_text_layer: bool | None, image_extensions:
 
 def coverage_rows(manifest: Manifest, graph: LinksGraph, coverage: CoverageSettings) -> list[CoverageRow]:
     documents = manifest.documents
+    # категории 8.2 содержательные: один документ может считаться в нескольких
     by_kind: dict[str, list[DocumentEntry]] = {}
     for document in documents:
-        by_kind.setdefault(document.doc_kind, []).append(document)
+        for kind in document.coverage_kinds:
+            by_kind.setdefault(kind, []).append(document)
     rows: list[CoverageRow] = []
     for kind, target in coverage.targets.items():
         actual = len(by_kind.get(kind, []))

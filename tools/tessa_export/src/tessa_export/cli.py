@@ -88,6 +88,7 @@ def _print_summary(summary: RunSummary) -> None:
     print()
     print(f"Документов в сете: {summary.documents}, файлов скачано: {summary.files_downloaded}")
     print(f"Отчёт валидации:   {summary.report_path}")
+    print(f"Таблица отбора:    {summary.review_path}")
     print(f"Архив:             {summary.archive_path}")
     if summary.overall == "PASS":
         print("ИТОГ: сет ПРИГОДЕН. Передайте архив исполнителю.")

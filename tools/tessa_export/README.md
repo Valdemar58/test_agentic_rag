@@ -22,7 +22,7 @@ links_graph.json + validation_report.md`. Ничего в Тессе не изм
 1. Загрузить образ:
 
    ```bash
-   docker load -i tessa-export-0.1.3.tar
+   docker load -i tessa-export-0.1.4.tar
    ```
 
 2. Положить рядом папки `config/` и `output/`. В `config/` — `config.yaml` и `seed_cards.yaml`.
@@ -40,7 +40,7 @@ links_graph.json + validation_report.md`. Ничего в Тессе не изм
 4. Проверить контейнер без доступа к Тессе (самопроверка на синтетических данных, ~10 секунд):
 
    ```bash
-   docker run --rm -v "$PWD/output:/output" tessa-export:0.1.3 self-test --output /output/selftest
+   docker run --rm -v "$PWD/output:/output" tessa-export:0.1.4 self-test --output /output/selftest
    ```
 
    Ожидаемый вывод заканчивается строкой `ИТОГ: сет ПРИГОДЕН`.
@@ -50,7 +50,7 @@ links_graph.json + validation_report.md`. Ничего в Тессе не изм
    ```bash
    docker run --rm --env-file tessa.env \
      -v "$PWD/config:/config:ro" -v "$PWD/output:/output" \
-     tessa-export:0.1.3 run --config /config/config.yaml
+     tessa-export:0.1.4 run --config /config/config.yaml
    ```
 
    Ход работы печатается на экран, полный лог — `output/tessa_export.log`.
@@ -62,6 +62,26 @@ links_graph.json + validation_report.md`. Ничего в Тессе не изм
    - `tessa_export.log` — лог.
 
 7. Передать исполнителю `tessa_export.zip` (и `tessa_export.log`, если были ошибки).
+
+## Отбор состава сета
+
+Первый запуск делается с запасом (`traversal.max_docs: 400`: полное замыкание связей глубины 2).
+В `output/export/documents_review.csv` (открывается в Excel, разделитель «;») одна строка на
+документ: категория Тессы, номер, дата, тема, статус, из какого документа и по какой связи он
+пришёл, число файлов, категории 8.2. Отметьте лишние документы в колонке «исключить» и передайте
+исполнителю список ID (или целые типы карточек). Исполнитель вносит их в `exclude_rules`
+конфига:
+
+```yaml
+exclude_rules:
+  - reason: "первичные документы ЭДО"
+    card_type_names: [PrimaryDocumentMKC, IncomingEDO]
+  - reason: "отобрано вручную"
+    card_ids: ["00000000-0000-0000-0000-000000000000"]
+```
+
+Повторный запуск с этим конфигом даёт воспроизводимый сет без исключённых документов:
+исключённая карточка не скачивается, и её связи дальше не раскрываются.
 
 ## Коды завершения и что делать
 
@@ -92,8 +112,8 @@ links_graph.json + validation_report.md`. Ничего в Тессе не изм
 Из корня репозитория, с заданными `TESSA_SDK_PATH` и `CARD_SERVICE_PATH` (в `.env`):
 
 ```
-pwsh tools/tessa_export/build_image.ps1 -Version 0.1.3     # Windows
-tools/tessa_export/build_image.sh 0.1.3                     # Linux/macOS
+pwsh tools/tessa_export/build_image.ps1 -Version 0.1.4     # Windows
+tools/tessa_export/build_image.sh 0.1.4                     # Linux/macOS
 ```
 
 Скрипт собирает образ (SDK Тессы и схемы сервиса карточек подключаются через build-context и

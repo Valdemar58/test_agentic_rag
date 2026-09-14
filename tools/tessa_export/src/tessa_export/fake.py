@@ -129,6 +129,8 @@ def make_snapshot(
     subject: str = "О назначении ответственных",
     status_id: UUID = ACTIVE_STATUS_ID,
     status_name: str = "Действующий",
+    state_id: int = 6,
+    state_name: str = "$KrStates_Doc_Registered",
     department: str | None = "Отдел охраны труда",
     outgoing: list[LinkInfo] | None = None,
     incoming: list[LinkInfo] | None = None,
@@ -154,8 +156,8 @@ def make_snapshot(
         "SignedByName": "С.С. Сотрудник3",
         "StatusID": str(status_id),
         "StatusNameStatus": status_name,
-        "StateID": 6,
-        "StateName": "$KrStates_Doc_Registered",
+        "StateID": state_id,
+        "StateName": state_name,
         "Comment": None,
     }
     if extra_fields:
@@ -186,8 +188,8 @@ def make_snapshot(
         "SignedByName": fields["SignedByName"],
         "StatusID::uid": str(status_id),
         "StatusNameStatus": status_name,
-        "StateID::int": 6,
-        "StateName": "$KrStates_Doc_Registered",
+        "StateID::int": state_id,
+        "StateName": state_name,
         "Comment": fields["Comment"],
     }
     type_id = stable_uuid("cardtype", type_name)

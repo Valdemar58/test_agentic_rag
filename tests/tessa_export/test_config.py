@@ -36,14 +36,16 @@ def _write(tmp_path: Path, name: str, text: str) -> Path:
 def test_example_config_is_valid() -> None:
     config = load_config(TOOL_DIR / "config.example.yaml")
     assert config.traversal.max_depth == 2
-    assert config.traversal.max_docs == 200
+    assert config.traversal.max_docs == 400  # первый запуск с запасом, затем ручной отбор
     assert config.traversal.directions == ["outgoing", "incoming"]
     assert config.exclude_rules == []
     assert "pdf" in config.files.allowed_extensions
     assert "doc" not in config.files.allowed_extensions
     # у заказчика нет CA сервера Тессы: проверка сертификата выключена и в примере, и по умолчанию
     assert config.tessa.verify_tls is False and config.tessa.ca_bundle is None
-    assert config.coverage.cancelled_status_ids == [CANCELLED_STATUS_ID]
+    assert config.status.cancelled_status_ids == [CANCELLED_STATUS_ID]
+    assert 5 in config.status.cancelled_state_ids and 6 in config.status.active_state_ids
+    assert "Инструкции" in config.coverage.coverage_kind_map
 
 
 def test_seed_file_from_tz_has_30_unique_ids() -> None:

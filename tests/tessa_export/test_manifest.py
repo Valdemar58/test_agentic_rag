@@ -6,16 +6,24 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID, uuid4
 
-from tessa_export.config import CoverageSettings, ExportConfig
-from tessa_export.fake import FakeGateway, build_demo_scenario, make_file, make_snapshot, stable_uuid
+from tessa_export.config import CANCELLED_STATUS_ID, CoverageSettings, ExportConfig, StatusSettings
+from tessa_export.fake import (
+    ACTIVE_STATUS_ID,
+    FakeGateway,
+    build_demo_scenario,
+    make_file,
+    make_snapshot,
+    stable_uuid,
+)
 from tessa_export.files import FileRecord, download_card_files
 from tessa_export.manifest import (
     LinksGraph,
     Manifest,
     build_links_graph,
     build_manifest,
-    classify_doc_kind,
+    classify_coverage_kinds,
     mark_duplicates,
+    resolve_doc_status,
 )
 from tessa_export.storage import write_json
 from tessa_export.walker import Walker, WalkResult
@@ -41,17 +49,58 @@ def _walk_and_download(
     return result, records
 
 
-def test_classify_doc_kind() -> None:
+def test_classify_coverage_kinds_by_title_and_subject() -> None:
     coverage = CoverageSettings()
-    assert classify_doc_kind("Приказ", None, coverage) == "Приказы"
-    assert classify_doc_kind("Положение об оплате", None, coverage) == "Положения / ЛНА"
-    assert classify_doc_kind(None, "Инструкция", coverage) == "Инструкции"
-    assert classify_doc_kind("Договор поставки", None, coverage) == "Договоры"
-    assert classify_doc_kind("Акт приёма-передачи", None, coverage) == "Акты"
-    assert classify_doc_kind("Контракт", None, coverage) == "Договоры"
-    assert classify_doc_kind("Служебная записка", None, coverage) == "Служебные записки"
-    assert classify_doc_kind("Первичный документ", "PrimaryDocumentMKC", coverage) == "Прочие виды"
-    assert classify_doc_kind(None, None, coverage) == "Прочие виды"
+    kinds = classify_coverage_kinds
+    assert kinds("Приказ", None, "О назначении ответственных", coverage) == ["Приказы"]
+    # категории 8.2 содержательные: приказ об утверждении инструкции считается в обеих
+    instruction = kinds("Приказ", None, "Об утверждении и введении в действие Инструкции по ДОУ", coverage)
+    assert instruction == ["Приказы", "Инструкции"]
+    assert kinds("Приказ", None, "О внесении изменений в ПВТР (донорство)", coverage) == [
+        "Приказы",
+        "Положения / ЛНА",
+    ]
+    assert kinds("Приказ", None, "Об утверждении Регламента работы ПДО", coverage) == [
+        "Приказы",
+        "Положения / ЛНА",
+    ]
+    # «акт» внутри слова («актуализация») — не акт
+    assert kinds("Приказ", None, "Об актуализации перечня", coverage) == ["Приказы"]
+    assert kinds(None, "Инструкция", None, coverage) == ["Инструкции"]
+    assert kinds("Договорной документ", None, None, coverage) == ["Договоры"]
+    assert kinds("Акт приёма-передачи", None, None, coverage) == ["Акты"]
+    assert kinds("Иной документ", None, "Акт на списание материалов", coverage) == ["Акты"]
+    assert kinds("Служебная записка", None, "Об оплате", coverage) == ["Служебные записки"]
+    assert kinds("Первичный документ", "PrimaryDocumentMKC", None, coverage) == ["Прочие виды"]
+    assert kinds(None, None, None, coverage) == ["Прочие виды"]
+
+
+def test_doc_status_rule(tmp_path: Path) -> None:
+    status = StatusSettings()
+    assert resolve_doc_status(str(CANCELLED_STATUS_ID), 6, status) == "cancelled"
+    assert resolve_doc_status(str(CANCELLED_STATUS_ID).upper(), 6, status) == "cancelled"
+    assert resolve_doc_status(None, 5, status) == "cancelled"  # $KrStates_Doc_Canceled
+    assert resolve_doc_status(None, 17, status) == "cancelled"  # Аннулирован
+    assert resolve_doc_status(str(ACTIVE_STATUS_ID), 6, status) == "active"
+    assert resolve_doc_status(None, 8, status) == "active"  # Signed, у типов без StatusID
+    assert resolve_doc_status(None, 13, status) == "active"  # Списан в дело
+    assert resolve_doc_status(None, 1, status) == "draft"  # $KrStates_Doc_Active = на согласовании
+    assert resolve_doc_status(None, 0, status) == "draft"
+    assert resolve_doc_status(None, None, status) == "draft"
+
+    gateway = FakeGateway()
+    signed, in_approval, annulled = uuid4(), uuid4(), uuid4()
+    gateway.add(make_snapshot(signed, state_id=8, state_name="$KrStates_Doc_Signed"))
+    gateway.add(make_snapshot(in_approval, state_id=1, state_name="$KrStates_Doc_Active"))
+    gateway.add(make_snapshot(annulled, state_id=17, state_name="Аннулирован"))
+    config = _config()
+    result, records = _walk_and_download(gateway, [signed, in_approval, annulled], tmp_path, config)
+    manifest = build_manifest(result, records, config)
+    by_id = {document.card_id: document for document in manifest.documents}
+    assert by_id[signed].doc_status == "active" and by_id[signed].state_id == 8
+    assert by_id[in_approval].doc_status == "draft" and by_id[in_approval].is_cancelled is False
+    assert by_id[annulled].doc_status == "cancelled" and by_id[annulled].is_cancelled is True
+    assert manifest.stats.doc_statuses == {"active": 1, "draft": 1, "cancelled": 1}
 
 
 def test_manifest_from_demo_scenario(tmp_path: Path) -> None:
@@ -66,9 +115,10 @@ def test_manifest_from_demo_scenario(tmp_path: Path) -> None:
     by_id = {document.card_id: document for document in manifest.documents}
 
     order = by_id[A]
-    assert order.doc_kind == "Приказы"
+    assert order.doc_kind == "Приказ"  # категория Тессы как есть
+    assert "Приказы" in order.coverage_kinds
     assert order.number == "144"
-    assert order.is_cancelled is True
+    assert order.is_cancelled is True and order.doc_status == "cancelled"
     assert order.status_name == "Отмененный"
     assert order.doc_date is not None and order.doc_date.year == 2026
     assert order.department
@@ -82,12 +132,13 @@ def test_manifest_from_demo_scenario(tmp_path: Path) -> None:
     assert pdf.downloaded and pdf.sha256 and pdf.path == f"files/{A}/{pdf.name}"
 
     memo = by_id[E]
-    assert memo.doc_kind == "Служебные записки"
+    assert memo.doc_kind == "Служебная записка"
+    assert "Служебные записки" in memo.coverage_kinds
     assert {path.via_card_id for path in memo.entry_paths} == {A, G}
     assert memo.files == []
 
-    assert by_id[C].doc_kind == "Положения / ЛНА"
-    assert by_id[G].doc_kind == "Акты"
+    assert "Положения / ЛНА" in by_id[C].coverage_kinds
+    assert "Акты" in by_id[G].coverage_kinds
 
     stats = manifest.stats
     assert stats.documents == len(result.cards)
@@ -95,7 +146,9 @@ def test_manifest_from_demo_scenario(tmp_path: Path) -> None:
     assert stats.files_downloaded + stats.files_skipped == stats.files_total
     assert stats.skipped_by_reason["virtual"] == 1
     assert stats.skipped_by_extension["sig"] == 1
-    assert stats.doc_kinds["Приказы"] == 2
+    assert stats.doc_kinds["Приказ"] == 2
+    assert stats.coverage_kinds["Приказы"] == 2
+    assert stats.doc_statuses["cancelled"] >= 1
     assert stats.card_types["OrderMKC"] == len(manifest.documents)
     assert "Отмененный" in stats.status_values.values()
     assert stats.relation_types["в отмену"] == "отменено"

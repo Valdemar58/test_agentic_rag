@@ -12,13 +12,14 @@
 | `tessa_card_id` | str (uuid) | `Card.id` | Явный идентификатор карточки в Тессе (дублирует `doc_id` по требованию ТЗ) | ✅ |
 | `card_type_name` | str | `Card.type_name` | Системное имя типа карточки, например `OrderMKC` | ✅ |
 | `card_type_caption` | str | `Card.type_caption` | Отображаемое имя типа, например «Приказ» | ✅ |
-| `doc_kind` | str | `DocumentCommonInfo.DocTypeTitle` → `TypeDocumentNameTypeDocument` → `Card.type_caption` | Вид документа для фильтра и хлебных крошек; первое непустое | ❓ проверить на других типах |
+| `doc_kind` | str | `DocumentCommonInfo.DocTypeTitle` → `Card.type_caption` | Категория Тессы как есть («Приказ», «Договорной документ», «Служебная записка», «Первичный документ»…); по экспорту 2026-09-14 совпадает с типом карточки 1:1. Категории 8.2 (ЛНА, инструкции, акты) содержательные, в индекс не пишутся: они считаются по теме и виду только для покрытия и квот голден-сета | ✅ решение заказчика 2026-09-14 |
 | `doc_number` | str | `DocumentCommonInfo.FullNumber` → `SecondaryFullNumber` | Номер; у незарегистрированных — номер проекта | ✅ |
 | `doc_date` | date (ISO) | `DocumentCommonInfo.DocDate` → `CreationDate` | Дата документа; для фильтра по диапазону хранится и как `doc_date_ts` (int, unix) | ✅ |
-| `doc_status` | enum `active` / `cancelled` / `draft` / `unknown` | `DocumentCommonInfo.StatusID` через таблицу в конфиге | Известно: `de9d3b6d-532b-4cb8-aa7b-e055e8986e48` → `cancelled`. Остальные значения — по экспорту. Фильтр `hybrid_search` по умолчанию: `doc_status == active` | ❓ значения для `active`, `draft` |
-| `doc_status_name` | str | `DocumentCommonInfo.StatusNameStatus` | Отображаемое имя статуса как есть («Отмененный») | ✅ |
+| `doc_status` | enum `active` / `cancelled` / `draft` | `DocumentCommonInfo.StatusID` + `StateID` через таблицы в конфиге (`status` экспорт-скрипта, то же правило в инжесте) | `cancelled`: `StatusID` ∈ {`de9d3b6d…` «Отмененный»} или `StateID` ∈ {5 Canceled, 17 Аннулирован, 21 На подтверждении аннулирования}; иначе `active`: `StateID` ∈ {6 Registered, 8 Signed, 11 На исполнении, 12 Исполнено, 13 Списан в дело, 18 Добавление скана, 19 На хранении}; иначе `draft` (0 Draft, 1 Active = на согласовании, 2 Approved, 3 Disapproved, 4 Editing, 7 Registration, 9 Declined, 10 Signing, 14, 15, 16, 20). `StatusID` есть только у приказов («Действующий» `1229fb49…`, «Отмененный») и договоров («Действует» `f9e512aa…`). Фильтр `hybrid_search` по умолчанию: `doc_status == active` | ❓ таблицу состояний подтвердить (О1) |
+| `doc_status_name` | str | `DocumentCommonInfo.StatusNameStatus` | Отображаемое имя статуса как есть («Отмененный»); у типов без справочника `null` | ✅ |
+| `state_id`, `state_name` | int, str | `DocumentCommonInfo.StateID` / `StateName` | Состояние маршрута как есть (`$KrStates_Doc_Registered`, «Исполнено»…), есть у всех типов | ✅ по экспорту |
 | `approval_state` | str | `KrApprovalCommonInfoVirtual.StateName` → `DocumentCommonInfo.StateName` | Статус согласования (ключ локализации `$KrStates_Doc_*`); человекочитаемое имя — по словарю в конфиге | ✅ |
-| `department` | str | `DocumentCommonInfo.DepartmentName` | Подразделение; фильтр `hybrid_search` | ✅ у приказа, ❓ у других типов |
+| `department` | str \| null | `DocumentCommonInfo.DepartmentName` | Подразделение; фильтр `hybrid_search`. По экспорту заполнено у 45/65 приказов и 15/17 договоров, у остальных типов поля нет | ✅ необязательное |
 | `department_id` | str (uuid) | `DocumentCommonInfo.DepartmentID` | Для точного фильтра | ✅ |
 | `author` | str | `DocumentCommonInfo.AuthorName` → `RegistratorName` → `Card.created_by_name` | Автор/регистратор | ✅ |
 | `relations` | list[{`doc_id`, `relation`, `direction`}] | `OutgoingRefDocs.rows[].DocID/RefTypeName` (`direction=outgoing`), `IncomingRefDocs.rows[].DocID` (`direction=incoming`, `relation` = `RefTypeReverseName` из карточки-источника по `links_graph.json`, иначе `null`) | Связи только из карточек (§7) | ✅ структура, ❓ полный перечень типов |
@@ -38,24 +39,29 @@
 | `comment` | `DocumentCommonInfo.Comment` (например «Отменен приказом от 27.08.2026 № 173.») | ✅ |
 | `signed_by` | `DocumentCommonInfo.SignedByName` | ✅ |
 | `direction_activity` | `DirectionActivityDCI.rows[].DirectionActivityName` | ✅ |
-| `approvers` | `Approv.rows[].UserName` | ✅ |
-| `responsible` | `ResponsibleErrand.rows[].UserName` | ✅ |
-| `file_category` | `CardData.files[].category_caption` («Документ») | ✅ |
+| `approvers` | `Approv.rows[].UserName` | ✅ ФИО храним (решение заказчика 2026-09-14: в Тессе они не скрываются) |
+| `responsible` | `ResponsibleErrand.rows[].UserName` | ✅ ФИО храним |
+| `validity_period` | `DocumentCommonInfo.ValidityPeriod` у договоров: свободный текст срока действия («вступает в силу с 01.01.2026 и действует…»); не статус | ✅ по экспорту |
+| `file_category` | `CardData.files[].category_caption` («Документ», «Приложение», «Дополнительные сведения», «Подписанные документы», «Файлы для отправки по ЭДО», «Получено из Диадока», «Подписи ЭП»; у части старых файлов пусто) | ✅ по экспорту |
+| `file_role` | `main` / `appendix` / `supplement` по правилу п. 3.1 | ⚙ |
 | `card_version`, `card_modified` | `Card.version`, `Card.modified` | ✅ |
 | `chunk_kind` | `structural` / `fallback` / `table` / `glossary` | ⚙ |
 | `parent_id`, `chunk_index` | parent-child и порядок в документе | ⚙ |
 
 ## 3. Правила и допущения
 
-1. **Форматы и основной файл документа** (правило заказчика от 2026-09-14, детали ❓ О5): обрабатываются только файлы форматов `pdf, doc, docx, xls, xlsx, pptx` (список в конфиге); `.sig`, `.html`, `.zip`, виртуальные файлы (`is_virtual`, `KrVirtualFileType`) и прочее пропускаются с записью в отчёт. Если у карточки есть и `pdf` (подписанный итог), и `docx`-оригинал (с меткой `***sign***` вместо подписи), обрабатывается оригинал. Предлагаемое правило: `docx`, имя которого не начинается с «Для печати», = оригинал; при его наличии `pdf` и «Для печати»-`docx` пропускаются как дубликаты; остальные файлы известных форматов индексируются как приложения с тем же `doc_id` и своим `file_name`.
-2. **Пустые поля** не заполняются выдумкой: отсутствующее поле → `null`, `doc_status` → `unknown` с предупреждением в логе инжеста.
-3. **Три статуса независимы**: `doc_status` (действует/отменён/проект, из `StatusID`), `approval_state` (согласование, Kr), `StateName` маршрута. Проверка актуальности в самопроверке агента — только по `doc_status`.
+1. **Файлы карточки** (правило по реальному экспорту 2026-09-14, ❓ на подтверждение, О5). Работают только последние версии файлов форматов `pdf, docx, xlsx, pptx` и изображений; `.sig`, `.html`, `.zip`, `.xml`, `doc/xls` (пока), виртуальные файлы пропускаются с записью в отчёт. Дальше три шага.
+   - **Никогда не индексируются:** файлы «Для печати_…» (печатная копия шаблона), файлы категории «Подписи ЭП» и «Получено из Диадока» (дубли подписанных форм и XML УПД), а также любой файл, чей sha256 уже проиндексирован в другой карточке (дубль остаётся ссылкой `also_in`).
+   - **Основной файл** (`file_role = main`, один на документ), первое найденное: (1) `docx` категории «Документ», не начинающийся с «Для печати» (у приказов это «ДокШаблон …docx» = оригинал с меткой подписи); (2) `docx` категории «Файлы для отправки по ЭДО» (у договоров это текст, ушедший на подпись); (3) `pdf` категории «Подписанные документы» или «Документ» (регистрационный «№ от дата …pdf»); (4) любой `docx`, затем любой `pdf` без категории. `pdf`-дубликат основного текста при наличии оригинала пропускается.
+   - **Остальные файлы известных форматов** индексируются с тем же `doc_id`: категория «Приложение» и прочие файлы категорий «Документ» / «Подписанные документы» / «Файлы для отправки по ЭДО» → `file_role = appendix` (сюда попадают регламенты и инструкции, утверждённые приказом); категория «Дополнительные сведения» → `file_role = supplement` (протоколы, коммерческие предложения, уставы и выписки контрагентов, шаблоны справок): индексируется только у приказов (там лежат сами ЛНА), у остальных типов пропускается. Приложения и дополнения цитируются как «Документ» с именем файла в хлебных крошках.
+2. **Пустые поля** не заполняются выдумкой: отсутствующее поле → `null`; `doc_status` всегда определён правилом (при отсутствии данных `draft`).
+3. **Три статуса независимы**: `doc_status` (по `StatusID` и `StateID` через таблицы конфига), `approval_state` (согласование, Kr), `state_name` маршрута. Проверка актуальности в самопроверке агента — только по `doc_status`.
 4. **Фильтруемые поля Qdrant** (индексы payload): `doc_id`, `doc_kind`, `doc_status`, `doc_date_ts`, `department`, `chunk_kind`, `file_sha256`.
 5. Маппинг оформляется кодом в `src/ingest/metadata.py` как явная таблица «поле карточки → поле чанка» с этим документом в качестве спецификации; изменения — только через правку обоих.
 
 ## 4. Вопросы заказчику по маппингу
 
-1. Подтвердить выбор `DocTypeTitle` как «вида документа» для категорий 8.2 (или использовать `TypeCaption` типа карточки).
-2. Прислать после экспорта значения `StatusID`/`StatusNameStatus` для «действует» и «проект» (скрипт выведет все встреченные пары).
-3. Подтвердить правило основного файла (п. 3.1) или указать иное.
-4. Нужны ли в метаданных `approvers`/`responsible` (ФИО сотрудников) — или их исключить из индекса.
+1. ~~Вид документа~~ — закрыт 2026-09-14: категория Тессы (`DocTypeTitle`), категории 8.2 только для покрытия.
+2. ~~Значения `StatusID`~~ — закрыт по экспорту 2026-09-14; открыта таблица состояний `StateID` → active/cancelled/draft (см. `doc_status`).
+3. Подтвердить правило файлов (п. 3.1, версия по реальному экспорту) или указать иное.
+4. ~~ФИО в метаданных~~ — закрыт 2026-09-14: храним.

@@ -17,10 +17,12 @@ from tessa_export.inspect_files import inspect_records
 from tessa_export.manifest import build_links_graph, build_manifest
 from tessa_export.models import GatewayError, TessaGateway
 from tessa_export.report import render_report
+from tessa_export.review import render_review_csv
 from tessa_export.storage import (
     LINKS_GRAPH_NAME,
     MANIFEST_NAME,
     REPORT_NAME,
+    REVIEW_NAME,
     export_dir,
     save_card,
     write_json,
@@ -41,6 +43,7 @@ class RunSummary:
     manifest_path: Path
     links_graph_path: Path
     report_path: Path
+    review_path: Path
     archive_path: Path
     documents: int
     files_downloaded: int
@@ -92,6 +95,9 @@ def run_export(
     report = validate(manifest, graph, config.coverage)
     report_path = export_root / REPORT_NAME
     report_path.write_text(render_report(manifest, report), encoding="utf-8", newline="\n")
+    review_path = export_root / REVIEW_NAME
+    # BOM нужен, чтобы Excel открыл кириллицу без вопросов о кодировке
+    review_path.write_text(render_review_csv(manifest), encoding="utf-8-sig", newline="\n")
 
     archive_path = make_archive(export_root, config.output_dir / config.archive_name)
     logger.info(
@@ -106,6 +112,7 @@ def run_export(
         manifest_path=manifest_path,
         links_graph_path=links_graph_path,
         report_path=report_path,
+        review_path=review_path,
         archive_path=archive_path,
         documents=manifest.stats.documents,
         files_downloaded=manifest.stats.files_downloaded,

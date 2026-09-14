@@ -17,14 +17,15 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 from tessa_export import __name__ as _package_name
-from tessa_export.config import CoverageSettings, ExportConfig
+from tessa_export.config import CoverageSettings, ExportConfig, StatusSettings
 from tessa_export.files import FileRecord
 from tessa_export.models import CardSnapshot
 from tessa_export.storage import CARDS_DIR, CARDS_RAW_DIR
 from tessa_export.walker import EntryPath, LinkEdge, WalkResult
 
-MANIFEST_VERSION = "1"
+MANIFEST_VERSION = "2"
 APPROVAL_SECTION = "KrApprovalCommonInfoVirtual"
+DocStatus = Literal["active", "cancelled", "draft"]
 
 
 class _Model(BaseModel):
@@ -70,13 +71,16 @@ class DocumentEntry(_Model):
     type_name: str | None
     type_caption: str | None
     doc_type_title: str | None
-    doc_kind: str = Field(description="Категория чек-листа 8.2 по doc_kind_map")
+    doc_kind: str = Field(description="Категория Тессы: DocTypeTitle, иначе TypeCaption")
+    coverage_kinds: list[str] = Field(description="Категории 8.2 по содержанию (coverage_kind_map)")
     number: str | None
     doc_date: date | None
     subject: str | None
     department: str | None
     status_id: str | None
     status_name: str | None
+    state_id: int | None
+    doc_status: DocStatus = Field(description="Статус по правилу status конфига: active/cancelled/draft")
     is_cancelled: bool
     state_name: str | None
     approval_state: str | None
@@ -124,7 +128,9 @@ class ManifestStats(_Model):
     skipped_by_reason: dict[str, int]
     skipped_by_extension: dict[str, int]
     duplicate_files: int
-    doc_kinds: dict[str, int]
+    doc_kinds: dict[str, int] = Field(description="Категория Тессы → документов")
+    coverage_kinds: dict[str, int] = Field(description="Категория 8.2 → документов (с пересечениями)")
+    doc_statuses: dict[str, int] = Field(description="Статус документа → документов")
     card_types: dict[str, int]
     status_values: dict[str, str | None] = Field(description="StatusID → StatusNameStatus, все встреченные")
     relation_types: dict[str, str | None] = Field(description="RefTypeName → RefTypeReverseName")
@@ -161,17 +167,40 @@ class LinksGraph(_Model):
     dangling_edges: list[LinkEdgeEntry] = Field(description="Рёбра к документам вне сета")
 
 
-def classify_doc_kind(
-    doc_type_title: str | None, type_caption: str | None, coverage: CoverageSettings
-) -> str:
-    """Категория чек-листа 8.2 по регэкспам конфига над видом документа и типом карточки."""
-    for candidate in (doc_type_title, type_caption):
-        if not candidate:
-            continue
-        for kind, patterns in coverage.doc_kind_map.items():
-            if any(re.search(pattern, candidate, re.IGNORECASE) for pattern in patterns):
-                return kind
-    return coverage.other_kind_label
+def classify_coverage_kinds(
+    doc_type_title: str | None, type_caption: str | None, subject: str | None, coverage: CoverageSettings
+) -> list[str]:
+    """Категории 8.2 по регэкспам конфига над видом документа, типом карточки и темой.
+
+    Категории содержательные (решение заказчика 2026-09-14): приказ «Об утверждении Инструкции…»
+    попадает и в «Приказы», и в «Инструкции». Без совпадений — other_kind_label."""
+    texts = [text for text in (doc_type_title, type_caption, subject) if text]
+    kinds = [
+        kind
+        for kind, patterns in coverage.coverage_kind_map.items()
+        if any(re.search(pattern, text, re.IGNORECASE) for pattern in patterns for text in texts)
+    ]
+    return kinds or [coverage.other_kind_label]
+
+
+def resolve_doc_status(status_id: str | None, state_id: int | None, status: StatusSettings) -> DocStatus:
+    """Статус документа по StatusID и StateID (правило и таблицы состояний в конфиге, StatusSettings)."""
+    if status_id and status_id.lower() in {str(item) for item in status.cancelled_status_ids}:
+        return "cancelled"
+    if state_id in status.cancelled_state_ids:
+        return "cancelled"
+    if state_id in status.active_state_ids:
+        return "active"
+    return "draft"
+
+
+def _to_int(value: Any) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _to_date(value: Any) -> date | None:
@@ -234,9 +263,13 @@ def document_entry(
     entry_paths: list[EntryPath],
     records: list[FileRecord],
     coverage: CoverageSettings,
+    status: StatusSettings,
 ) -> DocumentEntry:
     status_id = snapshot.common_text("StatusID")
-    cancelled_ids = {str(item) for item in coverage.cancelled_status_ids}
+    state_id = _to_int(snapshot.common_field("StateID"))
+    doc_type_title = snapshot.common_text("DocTypeTitle")
+    subject = snapshot.common_text("Subject")
+    doc_status = resolve_doc_status(status_id, state_id, status)
     approval = snapshot.sections.get(APPROVAL_SECTION)
     approval_state = None
     if approval is not None and approval.fields:
@@ -246,16 +279,19 @@ def document_entry(
         card_id=snapshot.card_id,
         type_name=snapshot.type_name,
         type_caption=snapshot.type_caption,
-        doc_type_title=snapshot.common_text("DocTypeTitle"),
-        doc_kind=classify_doc_kind(snapshot.common_text("DocTypeTitle"), snapshot.type_caption, coverage),
+        doc_type_title=doc_type_title,
+        doc_kind=doc_type_title or snapshot.type_caption or "Без вида",
+        coverage_kinds=classify_coverage_kinds(doc_type_title, snapshot.type_caption, subject, coverage),
         number=snapshot.common_text("FullNumber") or snapshot.common_text("SecondaryFullNumber"),
         doc_date=_to_date(snapshot.common_field("DocDate"))
         or _to_date(snapshot.common_field("CreationDate")),
-        subject=snapshot.common_text("Subject"),
+        subject=subject,
         department=snapshot.common_text("DepartmentName"),
         status_id=status_id,
         status_name=snapshot.common_text("StatusNameStatus"),
-        is_cancelled=status_id is not None and status_id.lower() in cancelled_ids,
+        state_id=state_id,
+        doc_status=doc_status,
+        is_cancelled=doc_status == "cancelled",
         state_name=snapshot.common_text("StateName"),
         approval_state=approval_state,
         depth=depth,
@@ -294,7 +330,12 @@ def build_manifest(
     coverage = config.coverage
     documents = [
         document_entry(
-            visited.snapshot, visited.depth, visited.entry_paths, file_records.get(card_id, []), coverage
+            visited.snapshot,
+            visited.depth,
+            visited.entry_paths,
+            file_records.get(card_id, []),
+            coverage,
+            config.status,
         )
         for card_id, visited in result.cards.items()
     ]
@@ -327,6 +368,8 @@ def build_manifest(
         ),
         duplicate_files=duplicates,
         doc_kinds=dict(Counter(document.doc_kind for document in documents)),
+        coverage_kinds=dict(Counter(kind for document in documents for kind in document.coverage_kinds)),
+        doc_statuses=dict(Counter(document.doc_status for document in documents)),
         card_types=dict(Counter(document.type_name or "?" for document in documents)),
         status_values=status_values,
         relation_types=relation_types,

@@ -6,6 +6,7 @@ output_dir/
     cards_raw/<card_id>.json сырой ответ Тессы cards/get
     files/<card_id>/<имя>    скачанные файлы
     manifest.json, links_graph.json, validation_report.md
+    documents_review.csv     таблица для ручного отбора состава сета
   tessa_export.log
   <archive_name>
 """
@@ -28,6 +29,7 @@ FILES_DIR = "files"
 MANIFEST_NAME = "manifest.json"
 LINKS_GRAPH_NAME = "links_graph.json"
 REPORT_NAME = "validation_report.md"
+REVIEW_NAME = "documents_review.csv"
 LOG_NAME = "tessa_export.log"
 
 _UNSAFE_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')

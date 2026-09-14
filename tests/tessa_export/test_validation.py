@@ -129,7 +129,7 @@ def test_demo_scenario_passes_checks_and_reports_deficits(tmp_path: Path) -> Non
     assert report.overall == "PASS"
     deficits = {row.name for row in report.coverage_deficits}
     assert "Приказы" in deficits  # в демо всего 2 приказа против ориентира 20
-    order_docs = [document for document in manifest.documents if document.doc_kind == "Приказы"]
+    order_docs = [document for document in manifest.documents if "Приказы" in document.coverage_kinds]
     assert any(any(file.has_terms_section for file in document.files) for document in order_docs)
     scan_row = next(row for row in report.coverage if row.name == "Сканы, доля")
     assert scan_row.ok  # jpg + pdf без текстового слоя
