@@ -231,8 +231,28 @@ class FileRulesSettings(StrictModel):
     skip_cross_card_duplicates: bool = Field(description="Одинаковый sha256 в разных карточках — один раз")
 
 
+class StatusRuleSettings(StrictModel):
+    """Правило статуса документа (О1): то же, что `status` в конфиге экспорт-скрипта."""
+
+    cancelled_status_ids: list[str] = Field(description="StatusID, означающие «отменён»")
+    cancelled_state_ids: list[int] = Field(description="StateID маршрута, означающие отмену")
+    active_state_ids: list[int] = Field(description="StateID действующего документа")
+    state_names: dict[int, str] = Field(default_factory=dict, description="StateID → имя состояния")
+
+    def resolve(self, status_id: str | None, state_id: int | None) -> DocStatus:
+        cancelled_ids = {value.lower() for value in self.cancelled_status_ids}
+        if status_id and status_id.lower() in cancelled_ids:
+            return "cancelled"
+        if state_id in self.cancelled_state_ids:
+            return "cancelled"
+        if state_id in self.active_state_ids:
+            return "active"
+        return "draft"
+
+
 class IngestSettings(StrictModel):
     extensions: list[str] = Field(min_length=1, description="Обрабатываемые расширения без точки (N2)")
+    status: StatusRuleSettings
     text_layer_min_chars_per_page: int = Field(ge=0, description="Порог маршрутизатора «скан/текст»")
     text_layer_min_page_share: float = Field(
         ge=0, le=1, description="Минимальная доля страниц с текстовым слоем для нативного разбора pdf"

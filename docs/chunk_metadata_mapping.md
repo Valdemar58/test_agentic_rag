@@ -58,7 +58,7 @@
 2. **Пустые поля** не заполняются выдумкой: отсутствующее поле → `null`; `doc_status` всегда определён правилом (при отсутствии данных `draft`).
 3. **Три статуса независимы**: `doc_status` (по `StatusID` и `StateID` через таблицы конфига), `approval_state` (согласование, Kr), `state_name` маршрута. Проверка актуальности в самопроверке агента — только по `doc_status`.
 4. **Фильтруемые поля Qdrant** (индексы payload): `doc_id`, `doc_kind`, `doc_status`, `doc_date_ts`, `department`, `chunk_kind`, `file_sha256`.
-5. Маппинг оформляется кодом в `src/ingest/metadata.py` как явная таблица «поле карточки → поле чанка» с этим документом в качестве спецификации; изменения — только через правку обоих.
+5. Маппинг оформляется кодом в `src/ingest/metadata.py` как явная таблица «поле карточки → поле чанка» с этим документом в качестве спецификации; изменения — только через правку обоих. **Реализовано (задача 4.5, 2026-09-15):** `document_metadata()` — поля документа (§1–2), `file_metadata()` — поля файла, `child_payload()`/`parent_payload()` — payload точки Qdrant (документ + файл + координаты чанка: `chunk_level` child/parent, `chunk_kind` structural/fallback/table, `section_path`, `clause`, `heading`, `breadcrumbs`, `page_no`, `parent_id`/`child_ids`, `text`, `body`, `tokens`). Таблицы статуса — `ingest.status` в `configs/app.yaml` (то же правило, что в экспорте; `state_names` для `approval_state_name`). Дополнительно к таблице: `approval_state_name` (имя состояния согласования по словарю), `also_in` (карточки с тем же файлом по sha256), `parse_route` (native/vlm). Проверено юнит-тестами на карточке в форме `CardData` и контрактным тестом на обезличенной реальной карточке приказа №144 (`OrderMKC`, отменён).
 
 ## 4. Вопросы заказчику по маппингу
 

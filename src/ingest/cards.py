@@ -58,6 +58,7 @@ class CardRecord(_Loose):
     created_by_name: str | None = None
     modified: datetime | None = None
     modified_by_name: str | None = None
+    version: int | None = None
     sections: dict[str, CardSection] = Field(default_factory=dict)
     files: list[CardFile] = Field(default_factory=list)
 
