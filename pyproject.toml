@@ -60,6 +60,16 @@ members = ["tools/tessa_export"]
 
 [tool.uv.sources]
 tessa-export = { workspace = true }
+# На Linux (машина приёмки) колёса torch с PyPI уже содержат CUDA. На Windows PyPI отдаёт сборку без
+# CUDA, поэтому для машины разработки torch и torchvision берутся из индекса PyTorch cu128
+# (эмбеддинги при инжесте на GPU, §2 ТЗ; RTX 5080 требует CUDA ≥ 12.8).
+torch = [{ index = "pytorch-cu128", marker = "sys_platform == 'win32'" }]
+torchvision = [{ index = "pytorch-cu128", marker = "sys_platform == 'win32'" }]
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
 
 [build-system]
 requires = ["hatchling"]

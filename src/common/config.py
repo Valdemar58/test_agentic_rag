@@ -156,7 +156,8 @@ class RerankerSettings(StrictModel):
 
 
 class QdrantSettings(StrictModel):
-    collection: str = Field(description="Коллекция чанков документов")
+    collection: str = Field(description="Коллекция child-чанков документов (с векторами)")
+    parents_collection: str = Field(description="Коллекция parent-разделов (только payload)")
     glossary_collection: str = Field(description="Коллекция глоссария (FR-5)")
     dense_vector: str = Field(description="Имя named vector для dense")
     sparse_vector: str = Field(description="Имя named vector для sparse")

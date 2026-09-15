@@ -16,7 +16,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from PIL import Image
 
@@ -42,6 +42,12 @@ class ParseResult:
     @property
     def ok(self) -> bool:
         return self.document is not None
+
+
+class Parser(Protocol):
+    """Разборщик файла в DoclingDocument; в тестах — фейк без Docling."""
+
+    def parse(self, path: Path, route: ParseRoute) -> ParseResult: ...
 
 
 class DocumentParser:

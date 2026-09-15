@@ -89,7 +89,9 @@ reranker:
   batch_size: 8
 
 qdrant:
+  # child-чанки с векторами; parent-разделы — отдельная коллекция без векторов (возврат по parent_id)
   collection: documents
+  parents_collection: documents_parents
   glossary_collection: glossary
   dense_vector: dense
   sparse_vector: sparse
