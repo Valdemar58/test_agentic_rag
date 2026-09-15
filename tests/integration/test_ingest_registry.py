@@ -25,6 +25,7 @@ def _record(
     file_role: str | None = None,
     parse_route: str | None = None,
     chunk_count: int = 0,
+    metadata_sha256: str | None = None,
 ) -> FileRecordInput:
     return FileRecordInput(
         card_id=CARD,
@@ -38,6 +39,7 @@ def _record(
         file_role=file_role,
         parse_route=parse_route,
         chunk_count=chunk_count,
+        metadata_sha256=metadata_sha256,
     )
 
 
@@ -63,11 +65,12 @@ async def _scenario(url: str) -> None:
 
         # повторная запись того же файла с новым хэшем обновляет запись, а не создаёт вторую
         second_run = await registry.start_run("data/corpus", synthetic=True)
-        await registry.record(second_run, [_record(ROW_A, "c" * 64, chunk_count=5)])
+        await registry.record(second_run, [_record(ROW_A, "c" * 64, chunk_count=5, metadata_sha256="m" * 64)])
         rows = await registry.load()
         assert len(rows) == 2
         updated = rows[(CARD, ROW_A)]
         assert updated.sha256 == "c" * 64 and updated.chunk_count == 5 and updated.last_run_id == second_run
+        assert updated.metadata_sha256 == "m" * 64
 
         assert await registry.remove([(CARD, ROW_B), (uuid.uuid4(), uuid.uuid4())]) == 1
         assert set(await registry.load()) == {(CARD, ROW_A)}

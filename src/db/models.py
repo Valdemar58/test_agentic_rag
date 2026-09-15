@@ -220,6 +220,9 @@ class IndexedFile(Base):
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     chunk_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     doc_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # Отпечаток метаданных карточки и роли файла: при том же sha256 файла, но изменившейся карточке
+    # (например, приказ отменён) обновляется только payload в Qdrant, без повторного разбора
+    metadata_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     last_run_id: Mapped[int | None] = mapped_column(
         ForeignKey("ingest_run.id", ondelete="SET NULL"), nullable=True, index=True
     )

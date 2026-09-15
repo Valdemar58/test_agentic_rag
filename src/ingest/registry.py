@@ -8,8 +8,9 @@
 from __future__ import annotations
 
 import datetime as dt
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from typing import Protocol
 from uuid import UUID
 
 from sqlalchemy import select
@@ -47,10 +48,52 @@ class FileRecordInput:
     parse_route: str | None = None
     chunk_count: int = 0
     doc_status: str | None = None
+    metadata_sha256: str | None = None
 
     def __post_init__(self) -> None:
         if self.status not in FILE_STATUSES:
             raise ValueError(f"статус файла {self.status!r} не из {FILE_STATUSES}")
+
+
+class IndexedFileLike(Protocol):
+    """Что читает инкрементальный прогон из записи реестра (ORM `IndexedFile` подходит структурно)."""
+
+    @property
+    def sha256(self) -> str: ...
+
+    @property
+    def status(self) -> str: ...
+
+    @property
+    def metadata_sha256(self) -> str | None: ...
+
+    @property
+    def chunk_count(self) -> int: ...
+
+    @property
+    def file_role(self) -> str | None: ...
+
+    @property
+    def parse_route(self) -> str | None: ...
+
+    @property
+    def doc_status(self) -> str | None: ...
+
+
+class Registry(Protocol):
+    """Интерфейс реестра для прогона: PostgreSQL в проде, память в тестах."""
+
+    async def start_run(self, corpus_path: str, *, synthetic: bool) -> int: ...
+
+    async def finish_run(
+        self, run_id: int, outcome: str, counters: RunCounters, *, error_text: str | None = None
+    ) -> None: ...
+
+    async def load(self, card_ids: Iterable[UUID] | None = None) -> Mapping[FileKey, IndexedFileLike]: ...
+
+    async def record(self, run_id: int, items: Iterable[FileRecordInput]) -> None: ...
+
+    async def remove(self, keys: Iterable[FileKey]) -> int: ...
 
 
 class FileRegistry:
@@ -125,6 +168,7 @@ class FileRegistry:
                 row.reason = item.reason
                 row.chunk_count = item.chunk_count
                 row.doc_status = item.doc_status
+                row.metadata_sha256 = item.metadata_sha256
                 row.last_run_id = run_id
                 row.indexed_at = now
 
