@@ -49,6 +49,7 @@ dev = [
     "types-openpyxl",
     # Экспорт-скрипт — отдельный workspace-пакет с лёгкими зависимостями (для Docker-образа заказчика)
     "tessa-export",
+    "testcontainers[postgres]>=4.8",
 ]
 
 [tool.uv.workspace]
@@ -68,7 +69,7 @@ sources = ["src"]
 [tool.ruff]
 line-length = 110
 target-version = "py313"
-src = ["src", "tests", "tools/tessa_export/src", "scripts", "mocks"]
+src = ["src", "tests", "tools/tessa_export/src", "scripts", "mocks", "alembic"]
 extend-exclude = ["data", "eval/reports"]
 
 [tool.ruff.lint]
@@ -94,7 +95,7 @@ strict = true
 plugins = ["pydantic.mypy"]
 mypy_path = "src,tools/tessa_export/src"
 # Каталог mocks добавляется в список при его появлении (этап 5)
-files = ["src", "scripts", "tests", "tools/tessa_export/src"]
+files = ["src", "scripts", "tests", "tools/tessa_export/src", "alembic"]
 namespace_packages = true
 explicit_package_bases = true
 exclude = ["^data/", "^\\.venv/"]
