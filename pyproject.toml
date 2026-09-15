@@ -35,6 +35,7 @@ dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
     "chainlit>=2.6",
+    "huggingface-hub>=0.26",
 ]
 
 [dependency-groups]
