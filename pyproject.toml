@@ -50,6 +50,7 @@ dev = [
     # Экспорт-скрипт — отдельный workspace-пакет с лёгкими зависимостями (для Docker-образа заказчика)
     "tessa-export",
     "testcontainers[postgres]>=4.8",
+    "fpdf2>=2.8",
 ]
 
 [tool.uv.workspace]
@@ -75,6 +76,10 @@ extend-exclude = ["data", "eval/reports"]
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
 
+[tool.ruff.lint.per-file-ignores]
+# Тексты синтетических документов: длинные строки — это содержимое, а не код
+"src/synthetic/texts.py" = ["E501"]
+
 [tool.ruff.lint.isort]
 known-first-party = [
     "common",
@@ -85,6 +90,7 @@ known-first-party = [
     "agent",
     "ui",
     "eval",
+    "synthetic",
     "tessa_export",
     "mocks",
 ]
