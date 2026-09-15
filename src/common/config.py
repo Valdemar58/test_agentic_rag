@@ -85,22 +85,43 @@ class ModelSource(StrictModel):
     ignore_patterns: list[str] = Field(default_factory=list, description="Файлы, которые не скачиваются")
 
 
+MODEL_SOURCE_KEYS = ("qwen", "dots", "embedding", "reranker", "docling_layout", "docling_tables")
+DOCLING_SOURCE_KEYS = ("docling_layout", "docling_tables")
+
+
 class ModelsSettings(StrictModel):
     dir: Path = Field(description="Каталог весов; относительный путь считается от корня репозитория")
     qwen: ModelSource
     dots: ModelSource
     embedding: ModelSource
     reranker: ModelSource
+    docling_layout: ModelSource = Field(description="Разметка страницы для нативного PDF-конвейера Docling")
+    docling_tables: ModelSource = Field(description="TableFormer: структура таблиц в нативном конвейере")
+
+    @model_validator(mode="after")
+    def _docling_names_follow_docling_layout(self) -> ModelsSettings:
+        # Docling ищет модель в artifacts_path/<repo_id с «/» → «--»>; иначе полезет в сеть
+        for key in DOCLING_SOURCE_KEYS:
+            source: ModelSource = getattr(self, key)
+            expected = source.repo_id.replace("/", "--")
+            if source.local_name != expected:
+                raise ValueError(f"models.{key}.local_name должен быть {expected!r} (так ищет Docling)")
+        return self
 
     @property
     def dir_absolute(self) -> Path:
         return _absolute(self.dir)
 
+    @property
+    def docling_artifacts_dir(self) -> Path:
+        """Каталог, который передаётся Docling как artifacts_path (модели лежат в нём по repo_id)."""
+        return self.dir_absolute
+
     def local_path(self, source: ModelSource) -> Path:
         return self.dir_absolute / source.local_name
 
     def all_sources(self) -> list[ModelSource]:
-        return [self.qwen, self.dots, self.embedding, self.reranker]
+        return [getattr(self, key) for key in MODEL_SOURCE_KEYS]
 
 
 # ---------- приложение ----------
@@ -146,7 +167,8 @@ class QdrantSettings(StrictModel):
 
 class VlmSettings(StrictModel):
     max_tokens: int = Field(gt=0, description="Лимит генерации dots.mocr на страницу")
-    image_scale: float = Field(gt=0, description="Масштаб растеризации страницы для VLM")
+    image_scale: float = Field(gt=0, description="Масштаб растеризации страницы pdf для VLM")
+    raster_image_scale: float = Field(gt=0, description="Масштаб для готовых изображений (jpg/png/tiff)")
     timeout_s: float = Field(gt=0)
 
 
@@ -163,10 +185,55 @@ class ChunkingSettings(StrictModel):
         return self
 
 
+class DoclingSettings(StrictModel):
+    device: Device = Field(description="Устройство моделей разметки и таблиц при инжесте (§2: GPU занят VLM)")
+    num_threads: int = Field(gt=0, description="Потоки CPU для моделей Docling")
+    document_timeout_s: float = Field(gt=0, description="Лимит времени на разбор одного файла")
+    table_mode: Literal["accurate", "fast"] = Field(description="Режим TableFormer")
+    images_scale: float = Field(gt=0, description="Масштаб растеризации страниц для разметки")
+
+
+class MainFileCandidate(StrictModel):
+    extension: str = Field(description="Расширение без точки")
+    categories: list[str] = Field(default_factory=list, description="Допустимые категории файла Тессы")
+    any_category: bool = Field(default=False, description="Любая категория, в том числе без категории")
+
+    @model_validator(mode="after")
+    def _categories_or_any(self) -> MainFileCandidate:
+        if bool(self.categories) == self.any_category:
+            raise ValueError("у кандидата основного файла либо categories, либо any_category: true")
+        return self
+
+
+class FileRulesSettings(StrictModel):
+    """Правило файлов карточки (О5, docs/chunk_metadata_mapping.md п. 3.1) [ТРЕБУЕТ ПОДТВЕРЖДЕНИЯ]."""
+
+    never_index_name_prefixes: list[str] = Field(description="Имена с таким началом не индексируются")
+    never_index_categories: list[str] = Field(description="Категории файлов, которые не индексируются")
+    main_candidates: list[MainFileCandidate] = Field(
+        min_length=1, description="Порядок выбора основного файла"
+    )
+    main_text_categories: list[str] = Field(description="Категории с копиями основного текста")
+    skip_pdf_duplicate_of_docx_main: bool = Field(
+        description="pdf в main_text_categories при docx-оригинале — дубль"
+    )
+    appendix_categories: list[str] = Field(description="Категории приложений (role=appendix)")
+    supplement_categories: list[str] = Field(
+        description="Категории дополнительных сведений (role=supplement)"
+    )
+    supplement_card_types: list[str] = Field(description="Типы карточек, у которых индексируются дополнения")
+    skip_cross_card_duplicates: bool = Field(description="Одинаковый sha256 в разных карточках — один раз")
+
+
 class IngestSettings(StrictModel):
     extensions: list[str] = Field(min_length=1, description="Обрабатываемые расширения без точки (N2)")
     text_layer_min_chars_per_page: int = Field(ge=0, description="Порог маршрутизатора «скан/текст»")
+    text_layer_min_page_share: float = Field(
+        ge=0, le=1, description="Минимальная доля страниц с текстовым слоем для нативного разбора pdf"
+    )
     vlm: VlmSettings
+    docling: DoclingSettings
+    files: FileRulesSettings
     chunking: ChunkingSettings
     parent_level: Literal["section", "document"] = Field(description="Уровень parent-чанка")
     tables_as_separate_chunks: bool

@@ -20,8 +20,9 @@ dependencies = [
     "torch>=2.6",
     "transformers>=4.45",
     "sentence-transformers>=3.0",
-    # Парсинг документов
+    # Парсинг документов; pypdf — детекция текстового слоя в маршрутизаторе
     "docling>=2.40",
+    "pypdf>=5.0",
     # Агент и инструменты
     "llama-index-core>=0.12",
     "llama-index-llms-openai-like>=0.3",

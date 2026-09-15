@@ -34,8 +34,30 @@ def test_example_config_is_valid_and_budget_is_12_gib() -> None:
     assert config.vllm.qwen.tool_call_parser == "hermes"
     assert config.models.dir_absolute == ROOT / "models"
     assert config.models.local_path(config.models.dots) == ROOT / "models" / "DotsMOCR"
-    assert len(config.models.all_sources()) == 4
+    assert len(config.models.all_sources()) == 6
     assert all(len(source.revision) == 40 for source in config.models.all_sources())
+    # Docling ищет модели в artifacts_path по repo_id с «/» → «--»
+    assert config.models.docling_artifacts_dir == ROOT / "models"
+    assert (
+        config.models.local_path(config.models.docling_layout).name == "docling-project--docling-layout-heron"
+    )
+
+
+def test_docling_model_name_must_follow_docling_layout(tmp_path: Path) -> None:
+    data = _example()
+    models = dict(data["models"])  # type: ignore[call-overload]
+    models["docling_layout"] = {**models["docling_layout"], "local_name": "layout"}
+    data["models"] = models
+    with pytest.raises(ConfigError, match="так ищет Docling"):
+        load_app_config(_write(tmp_path, data))
+    data = _example()
+    ingest = dict(data["ingest"])  # type: ignore[call-overload]
+    files = dict(ingest["files"])
+    files["main_candidates"] = [{"extension": "docx"}]
+    ingest["files"] = files
+    data["ingest"] = ingest
+    with pytest.raises(ConfigError, match="any_category"):
+        load_app_config(_write(tmp_path, data))
 
 
 def test_example_config_matches_tz_requirements() -> None:

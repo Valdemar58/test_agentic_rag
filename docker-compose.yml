@@ -189,6 +189,9 @@ services:
       - "${LANGFUSE_PORT:-3000}:3000"
     environment:
       <<: *langfuse-env
+      # Next.js слушает адрес из HOSTNAME; Docker подставляет туда id контейнера → сервер слушает только
+      # eth0, и healthcheck на 127.0.0.1 падает. 0.0.0.0 — все интерфейсы.
+      HOSTNAME: 0.0.0.0
       NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:-dev-nextauth-secret-change-me}
       LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: ${LANGFUSE_MINIO_PUBLIC_URL:-http://localhost:9090}
       LANGFUSE_S3_MEDIA_UPLOAD_INTERNAL_ENDPOINT: http://minio:9000

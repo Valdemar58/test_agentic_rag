@@ -53,6 +53,17 @@ models:
     repo_id: BAAI/bge-reranker-v2-m3
     revision: 953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e
     local_name: bge-reranker-v2-m3
+  # Модели нативного PDF-конвейера Docling (разметка страницы и структура таблиц). Без них Docling
+  # качал бы их с HF при первом запуске (с ветки main); local_name обязан совпадать с тем, как Docling
+  # ищет модель в artifacts_path: repo_id с «/» → «--».
+  docling_layout:
+    repo_id: docling-project/docling-layout-heron
+    revision: 8f39ad3c0b4c58e9c2d2c84a38465abf757272d8
+    local_name: docling-project--docling-layout-heron
+  docling_tables:
+    repo_id: docling-project/docling-models
+    revision: fc0f2d45e2218ea24bce5045f58a389aed16dc23
+    local_name: docling-project--docling-models
 
 paths:
   # Распакованный архив экспорта (export/ с cards, cards_raw, files, manifest.json, links_graph.json).
@@ -89,13 +100,49 @@ qdrant:
 ingest:
   # Форматы как в экспорте (N2): doc/xls пока не обрабатываются, остальное — в отчёт как «пропущено».
   extensions: [pdf, docx, xlsx, pptx, png, jpg, jpeg, tif, tiff, bmp, gif]
-  # Маршрутизатор: страница pdf с текстовым слоем короче порога считается сканом → dots.mocr.
+  # Маршрутизатор (FR-3): страница pdf с текстовым слоем короче порога считается сканом; документ идёт
+  # в нативный конвейер, если доля страниц с текстовым слоем не меньше text_layer_min_page_share,
+  # иначе целиком в VLM-конвейер с dots.mocr. Изображения — всегда VLM, docx/xlsx/pptx — всегда нативно.
   text_layer_min_chars_per_page: 50
+  text_layer_min_page_share: 0.5
   vlm:
-    # Docling VLM-конвейер с dots.mocr через OpenAI-совместимый endpoint профиля ingest.
+    # Docling VLM-конвейер (пресет dots_mocr) через OpenAI-совместимый endpoint профиля ingest.
     max_tokens: 8192
+    # Страница pdf (72 dpi в точках) растеризуется с этим масштабом: 2.0 ≈ 144 dpi.
     image_scale: 2.0
+    # Готовые изображения (jpg/png/tiff — уже 150–300 dpi) подаются как есть: увеличение раздувает
+    # картинку сверх лимита модели, сервер её сжимает, и координаты разметки перестают совпадать.
+    raster_image_scale: 1.0
     timeout_s: 600
+  docling:
+    # Нативный конвейер: разметка страницы (layout-heron) и таблицы (TableFormer) при инжесте
+    # считаются на CPU — GPU в это время занят dots.mocr (§2). OCR Docling выключен: сканы идут в VLM.
+    device: cpu
+    num_threads: 4
+    document_timeout_s: 600
+    table_mode: accurate
+    images_scale: 1.0
+  files:
+    # Правило файлов карточки — О5, docs/chunk_metadata_mapping.md п. 3.1 [ТРЕБУЕТ ПОДТВЕРЖДЕНИЯ].
+    # Никогда не индексируются печатные копии шаблона и служебные категории.
+    never_index_name_prefixes: ["Для печати"]
+    never_index_categories: ["Подписи ЭП", "Получено из Диадока"]
+    # Основной файл документа (role=main, один на карточку) — первый подходящий по порядку.
+    main_candidates:
+      - {extension: docx, categories: ["Документ"]}
+      - {extension: docx, categories: ["Файлы для отправки по ЭДО"]}
+      - {extension: pdf, categories: ["Подписанные документы", "Документ"]}
+      - {extension: docx, any_category: true}
+      - {extension: pdf, any_category: true}
+    # В этих категориях pdf при docx-оригинале — печатная/подписанная копия основного текста.
+    main_text_categories: ["Документ", "Подписанные документы", "Файлы для отправки по ЭДО"]
+    skip_pdf_duplicate_of_docx_main: true
+    appendix_categories: ["Приложение"]
+    # «Дополнительные сведения» (протоколы, уставы контрагентов, шаблоны) — только у приказов, где лежат ЛНА.
+    supplement_categories: ["Дополнительные сведения"]
+    supplement_card_types: [OrderMKC]
+    # Файл с тем же sha256 в другой карточке индексируется один раз (владелец — лучшая роль, затем порядок манифеста).
+    skip_cross_card_duplicates: true
   chunking:
     # FR-3: основной чанкер структурный (по DoclingDocument с хлебными крошками),
     # фоллбэк — фиксированный 512 токенов с перекрытием 64. Токены считаются токенайзером bge-m3.

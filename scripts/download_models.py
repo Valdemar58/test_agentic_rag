@@ -2,6 +2,7 @@
 
   uv run python scripts/download_models.py                 скачать всё, чего нет
   uv run python scripts/download_models.py --only qwen dots только выбранные
+      (ключи: qwen, dots, embedding, reranker, docling_layout, docling_tables)
   uv run python scripts/download_models.py --check          ничего не качать, показать состояние
 
 Повторный запуск ничего не качает: у каждой модели в `models/<имя>/.revision` записан commit HF.
@@ -16,13 +17,13 @@ import argparse
 import sys
 from pathlib import Path
 
-from common.config import ConfigError, ModelSource, load_app_config
+from common.config import MODEL_SOURCE_KEYS, ConfigError, ModelSource, load_app_config
 from common.model_store import ModelStatus, ensure_model, model_status
 
 EXIT_OK = 0
 EXIT_FAILURE = 1
 EXIT_CONFIG = 2
-MODEL_KEYS = ("qwen", "dots", "embedding", "reranker")
+MODEL_KEYS = MODEL_SOURCE_KEYS
 
 
 def _format(status: ModelStatus, note: str) -> str:
