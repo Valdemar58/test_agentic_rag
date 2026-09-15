@@ -54,6 +54,7 @@ class Chunk:
     tokens: int
     page_no: int | None
     item_refs: tuple[str, ...]
+    parent_id: str | None = None
 
 
 @dataclass

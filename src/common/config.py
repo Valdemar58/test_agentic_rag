@@ -178,11 +178,16 @@ class ChunkingSettings(StrictModel):
     min_tokens: int = Field(ge=0, description="Короче этого — чанк склеивается с соседом")
     breadcrumb_separator: str = Field(description="Разделитель хлебных крошек в тексте чанка")
     section_title_max_words: int = Field(gt=0, description="Короткий нумерованный абзац = заголовок раздела")
+    parent_max_tokens: int = Field(
+        gt=0, description="Предел parent-чанка (раздела); длиннее — несколько окон"
+    )
 
     @model_validator(mode="after")
     def _overlap_below_size(self) -> ChunkingSettings:
         if self.overlap_tokens >= self.max_tokens:
             raise ValueError("ingest.chunking.overlap_tokens должен быть меньше max_tokens")
+        if self.parent_max_tokens < self.max_tokens:
+            raise ValueError("ingest.chunking.parent_max_tokens не может быть меньше max_tokens")
         return self
 
 
