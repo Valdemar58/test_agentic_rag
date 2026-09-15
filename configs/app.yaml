@@ -1,6 +1,6 @@
-# Единый конфиг стенда (NFR-4). Все параметры моделей, стенда и приложения — здесь.
-# Секреты и пути к внешнему коду сюда не попадают: они читаются из переменных окружения (.env).
-# Секции приложения (БД, сервис карточек, чанкинг, поиск, агент) добавляются задачей 3.3.
+# Единый конфиг стенда и приложения (NFR-4): модели, стенд, инжест, поиск, агент, UI, eval.
+# Секреты, учётные записи, URL сервисов и пути к внешнему коду сюда не попадают — они читаются
+# из переменных окружения (.env, см. .env.example и src/common/settings.py).
 
 gpu:
   # Бюджет VRAM целевой карты приёмки (RTX 3080, 12 ГиБ). Действует на любой карте: scripts/stack.py
@@ -53,3 +53,121 @@ models:
     repo_id: BAAI/bge-reranker-v2-m3
     revision: 953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e
     local_name: bge-reranker-v2-m3
+
+paths:
+  # Распакованный архив экспорта (export/ с cards, cards_raw, files, manifest.json, links_graph.json).
+  # До реального корпуса — синтетические фикстуры (задача 3.6).
+  corpus_dir: data/corpus
+  # Рабочие данные инжеста: кэш разбора Docling, отчёты.
+  work_dir: data/work
+
+embedding:
+  # BAAI/bge-m3 (models.embedding): dense + sparse (lexical weights) из одной модели.
+  dense_dim: 1024
+  max_length: 8192
+  batch_size: 16
+  normalize: true
+  # §2 ТЗ: в рантайме эмбеддинг запроса на CPU; при инжесте — на GPU после выгрузки dots.mocr.
+  runtime_device: cpu
+  ingest_device: cuda
+
+reranker:
+  # BAAI/bge-reranker-v2-m3 (models.reranker), CPU в рантайме (§2, N17).
+  device: cpu
+  max_length: 1024
+  batch_size: 8
+
+qdrant:
+  collection: documents
+  glossary_collection: glossary
+  dense_vector: dense
+  sparse_vector: sparse
+  distance: Cosine
+  upsert_batch_size: 64
+  timeout_s: 30
+
+ingest:
+  # Форматы как в экспорте (N2): doc/xls пока не обрабатываются, остальное — в отчёт как «пропущено».
+  extensions: [pdf, docx, xlsx, pptx, png, jpg, jpeg, tif, tiff, bmp, gif]
+  # Маршрутизатор: страница pdf с текстовым слоем короче порога считается сканом → dots.mocr.
+  text_layer_min_chars_per_page: 50
+  vlm:
+    # Docling VLM-конвейер с dots.mocr через OpenAI-совместимый endpoint профиля ingest.
+    max_tokens: 8192
+    image_scale: 2.0
+    timeout_s: 600
+  chunking:
+    # FR-3: основной чанкер структурный (по DoclingDocument с хлебными крошками),
+    # фоллбэк — фиксированный 512 токенов с перекрытием 64. Токены считаются токенайзером bge-m3.
+    max_tokens: 512
+    overlap_tokens: 64
+    min_tokens: 24
+    breadcrumb_separator: " → "
+  # Parent-child: индексируется уровень пункта/абзаца, агенту возвращается родительский раздел.
+  parent_level: section
+  tables_as_separate_chunks: true
+  # FR-5: заголовки разделов, из которых извлекается глоссарий (сравнение без учёта регистра).
+  glossary_headings:
+    - "термины и определения"
+    - "термины, определения и сокращения"
+    - "сокращения"
+    - "используемые сокращения"
+    - "основные понятия"
+
+retrieval:
+  # FR-2: prefetch dense и sparse → серверный RRF в Qdrant → rerank топ-20 на CPU → top_k агенту.
+  prefetch_limit: 40
+  rerank_candidates: 20
+  top_k: 5
+  max_top_k: 20
+  # AC-2.2: без явного фильтра возвращаются только действующие документы.
+  default_statuses: [active]
+  return_parent: true
+
+agent:
+  llm:
+    # Рекомендованные Qwen параметры для режима без размышлений; thinking выключен (N9).
+    temperature: 0.7
+    top_p: 0.8
+    top_k: 20
+    max_tokens: 2048
+    timeout_s: 120
+    enable_thinking: false
+  # FR-1: не более 8 вызовов инструментов на запрос.
+  max_tool_calls: 8
+  memory:
+    # FR-6: буфер последних сообщений; при переполнении старые суммаризируются.
+    buffer_messages: 10
+    summary_trigger_tokens: 6000
+  # FR-6: кэш документов, найденных в рамках сессии.
+  session_document_cache: 20
+  rewrite_query: true
+
+mcp:
+  # FastMCP, транспорт streamable-http (N14).
+  host: 0.0.0.0
+  port: 8020
+  path: /mcp
+
+ui:
+  # Chainlit.
+  host: 0.0.0.0
+  port: 8080
+  title: "Поиск по документам СЭД"
+
+langfuse:
+  # Профиль observability включается флагом LANGFUSE_ENABLED в окружении; ключи там же.
+  flush_interval_s: 1.0
+  environment: dev
+
+eval:
+  golden_set: eval/golden_set.yaml
+  reports_dir: eval/reports
+  # NFR-2 / M6: первый видимый сигнал ≤ 5 с (p95).
+  first_signal_budget_s: 5.0
+  judge:
+    temperature: 0.0
+    max_tokens: 1024
+
+logging:
+  level: INFO

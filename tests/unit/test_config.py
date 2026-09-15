@@ -38,6 +38,34 @@ def test_example_config_is_valid_and_budget_is_12_gib() -> None:
     assert all(len(source.revision) == 40 for source in config.models.all_sources())
 
 
+def test_example_config_matches_tz_requirements() -> None:
+    config = load_app_config(DEFAULT_CONFIG_PATH)
+    assert config.agent.max_tool_calls == 8  # FR-1
+    assert config.retrieval.rerank_candidates == 20  # FR-2: rerank топ-20
+    assert config.retrieval.default_statuses == ["active"]  # AC-2.2
+    assert (config.ingest.chunking.max_tokens, config.ingest.chunking.overlap_tokens) == (512, 64)  # FR-3
+    assert config.embedding.runtime_device == "cpu" and config.reranker.device == "cpu"  # §2
+    assert config.agent.llm.enable_thinking is False  # N9
+    assert config.eval.first_signal_budget_s == 5.0  # NFR-2
+    assert config.paths.corpus_dir_absolute == ROOT / "data" / "corpus"
+    assert config.eval.golden_set_absolute == ROOT / "eval" / "golden_set.yaml"
+
+
+def test_cross_field_rules(tmp_path: Path) -> None:
+    data = _example()
+    retrieval = dict(data["retrieval"])  # type: ignore[call-overload]
+    retrieval["top_k"] = 50
+    data["retrieval"] = retrieval
+    with pytest.raises(ConfigError, match="top_k ≤ max_top_k"):
+        load_app_config(_write(tmp_path, data))
+    data = _example()
+    ingest = dict(data["ingest"])  # type: ignore[call-overload]
+    ingest["chunking"] = {**ingest["chunking"], "overlap_tokens": 512}
+    data["ingest"] = ingest
+    with pytest.raises(ConfigError, match="overlap_tokens"):
+        load_app_config(_write(tmp_path, data))
+
+
 def test_vllm_memory_above_budget_is_rejected(tmp_path: Path) -> None:
     data = _example()
     gpu = dict(data["gpu"])  # type: ignore[call-overload]

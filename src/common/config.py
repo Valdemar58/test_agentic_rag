@@ -1,7 +1,7 @@
-"""Единый конфиг стенда: `configs/app.yaml` (NFR-4).
+"""Единый конфиг стенда и приложения: `configs/app.yaml` (NFR-4).
 
-Здесь структура конфига и его загрузка. Секреты и пути к внешнему коду в файл не попадают:
-они читаются из переменных окружения отдельными настройками (задача 3.3). Путь к файлу можно
+Здесь структура конфига и его загрузка. Секреты, URL сервисов и пути к внешнему коду в файл не
+попадают: они читаются из переменных окружения (`common.settings`). Путь к файлу можно
 переопределить переменной окружения `APP_CONFIG_PATH`.
 """
 
@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
@@ -17,6 +18,9 @@ ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG_PATH = ROOT / "configs" / "app.yaml"
 CONFIG_PATH_ENV = "APP_CONFIG_PATH"
 
+Device = Literal["cpu", "cuda"]
+DocStatus = Literal["active", "cancelled", "draft"]
+
 
 class ConfigError(Exception):
     """Конфиг не найден, не читается или не проходит проверку."""
@@ -24,6 +28,13 @@ class ConfigError(Exception):
 
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+def _absolute(path: Path) -> Path:
+    return path if path.is_absolute() else ROOT / path
+
+
+# ---------- стенд ----------
 
 
 class GpuSettings(StrictModel):
@@ -83,7 +94,7 @@ class ModelsSettings(StrictModel):
 
     @property
     def dir_absolute(self) -> Path:
-        return self.dir if self.dir.is_absolute() else ROOT / self.dir
+        return _absolute(self.dir)
 
     def local_path(self, source: ModelSource) -> Path:
         return self.dir_absolute / source.local_name
@@ -92,10 +103,174 @@ class ModelsSettings(StrictModel):
         return [self.qwen, self.dots, self.embedding, self.reranker]
 
 
+# ---------- приложение ----------
+
+
+class PathsSettings(StrictModel):
+    corpus_dir: Path = Field(description="Распакованный архив экспорта (cards, files, manifest.json)")
+    work_dir: Path = Field(description="Рабочие данные инжеста: кэш разбора, отчёты")
+
+    @property
+    def corpus_dir_absolute(self) -> Path:
+        return _absolute(self.corpus_dir)
+
+    @property
+    def work_dir_absolute(self) -> Path:
+        return _absolute(self.work_dir)
+
+
+class EmbeddingSettings(StrictModel):
+    dense_dim: int = Field(gt=0, description="Размерность dense-вектора bge-m3")
+    max_length: int = Field(gt=0, description="Максимум токенов на вход модели")
+    batch_size: int = Field(gt=0)
+    normalize: bool = Field(description="Нормировать dense-векторы (косинусная близость)")
+    runtime_device: Device = Field(description="Устройство в рантайме (§2: CPU)")
+    ingest_device: Device = Field(description="Устройство при инжесте (§2: GPU после выгрузки VLM)")
+
+
+class RerankerSettings(StrictModel):
+    device: Device = Field(description="Устройство reranker'а (§2: CPU в рантайме)")
+    max_length: int = Field(gt=0, description="Максимум токенов пары запрос+чанк")
+    batch_size: int = Field(gt=0)
+
+
+class QdrantSettings(StrictModel):
+    collection: str = Field(description="Коллекция чанков документов")
+    glossary_collection: str = Field(description="Коллекция глоссария (FR-5)")
+    dense_vector: str = Field(description="Имя named vector для dense")
+    sparse_vector: str = Field(description="Имя named vector для sparse")
+    distance: Literal["Cosine", "Dot", "Euclid"]
+    upsert_batch_size: int = Field(gt=0)
+    timeout_s: float = Field(gt=0)
+
+
+class VlmSettings(StrictModel):
+    max_tokens: int = Field(gt=0, description="Лимит генерации dots.mocr на страницу")
+    image_scale: float = Field(gt=0, description="Масштаб растеризации страницы для VLM")
+    timeout_s: float = Field(gt=0)
+
+
+class ChunkingSettings(StrictModel):
+    max_tokens: int = Field(gt=0, description="Размер чанка фоллбэка и предел структурного чанка")
+    overlap_tokens: int = Field(ge=0, description="Перекрытие чанков фоллбэка")
+    min_tokens: int = Field(ge=0, description="Короче этого — чанк склеивается с соседом")
+    breadcrumb_separator: str = Field(description="Разделитель хлебных крошек в тексте чанка")
+
+    @model_validator(mode="after")
+    def _overlap_below_size(self) -> ChunkingSettings:
+        if self.overlap_tokens >= self.max_tokens:
+            raise ValueError("ingest.chunking.overlap_tokens должен быть меньше max_tokens")
+        return self
+
+
+class IngestSettings(StrictModel):
+    extensions: list[str] = Field(min_length=1, description="Обрабатываемые расширения без точки (N2)")
+    text_layer_min_chars_per_page: int = Field(ge=0, description="Порог маршрутизатора «скан/текст»")
+    vlm: VlmSettings
+    chunking: ChunkingSettings
+    parent_level: Literal["section", "document"] = Field(description="Уровень parent-чанка")
+    tables_as_separate_chunks: bool
+    glossary_headings: list[str] = Field(min_length=1, description="Заголовки разделов глоссария")
+
+
+class RetrievalSettings(StrictModel):
+    prefetch_limit: int = Field(gt=0, description="Кандидатов по каждому вектору до RRF")
+    rerank_candidates: int = Field(gt=0, description="Сколько кандидатов после RRF идёт в reranker")
+    top_k: int = Field(gt=0, description="Результатов агенту по умолчанию")
+    max_top_k: int = Field(gt=0, description="Верхняя граница top_k в запросе инструмента")
+    default_statuses: list[DocStatus] = Field(min_length=1, description="Фильтр статуса по умолчанию")
+    return_parent: bool = Field(description="Возвращать родительский раздел вместо child-чанка")
+
+    @model_validator(mode="after")
+    def _limits_are_nested(self) -> RetrievalSettings:
+        if not (self.top_k <= self.max_top_k <= self.rerank_candidates <= self.prefetch_limit):
+            raise ValueError(
+                "retrieval: должно выполняться top_k ≤ max_top_k ≤ rerank_candidates ≤ prefetch_limit"
+            )
+        return self
+
+
+class LlmSettings(StrictModel):
+    temperature: float = Field(ge=0)
+    top_p: float = Field(gt=0, le=1)
+    top_k: int = Field(ge=0)
+    max_tokens: int = Field(gt=0)
+    timeout_s: float = Field(gt=0)
+    enable_thinking: bool = Field(description="Режим размышлений Qwen3 (N9: выключен)")
+
+
+class MemorySettings(StrictModel):
+    buffer_messages: int = Field(gt=0, description="Сколько последних сообщений передаётся агенту")
+    summary_trigger_tokens: int = Field(
+        gt=0, description="Порог, после которого старые сообщения суммаризируются"
+    )
+
+
+class AgentSettings(StrictModel):
+    llm: LlmSettings
+    max_tool_calls: int = Field(gt=0, description="Бюджет вызовов инструментов на запрос (FR-1)")
+    memory: MemorySettings
+    session_document_cache: int = Field(ge=0, description="Кэш найденных документов в сессии (FR-6)")
+    rewrite_query: bool = Field(description="Переписывать запрос с учётом истории и глоссария")
+
+
+class McpSettings(StrictModel):
+    host: str
+    port: int = Field(ge=1, le=65535)
+    path: str = Field(pattern=r"^/", description="Путь streamable-http endpoint")
+
+
+class UiSettings(StrictModel):
+    host: str
+    port: int = Field(ge=1, le=65535)
+    title: str
+
+
+class LangfuseSettings(StrictModel):
+    flush_interval_s: float = Field(gt=0)
+    environment: str
+
+
+class JudgeSettings(StrictModel):
+    temperature: float = Field(ge=0)
+    max_tokens: int = Field(gt=0)
+
+
+class EvalSettings(StrictModel):
+    golden_set: Path
+    reports_dir: Path
+    first_signal_budget_s: float = Field(gt=0, description="NFR-2 / M6: первый сигнал, секунды")
+    judge: JudgeSettings
+
+    @property
+    def golden_set_absolute(self) -> Path:
+        return _absolute(self.golden_set)
+
+    @property
+    def reports_dir_absolute(self) -> Path:
+        return _absolute(self.reports_dir)
+
+
+class LoggingSettings(StrictModel):
+    level: Literal["DEBUG", "INFO", "WARNING", "ERROR"]
+
+
 class AppConfig(StrictModel):
     gpu: GpuSettings
     vllm: VllmSettings
     models: ModelsSettings
+    paths: PathsSettings
+    embedding: EmbeddingSettings
+    reranker: RerankerSettings
+    qdrant: QdrantSettings
+    ingest: IngestSettings
+    retrieval: RetrievalSettings
+    agent: AgentSettings
+    mcp: McpSettings
+    ui: UiSettings
+    langfuse: LangfuseSettings
+    eval: EvalSettings
+    logging: LoggingSettings
 
 
 def config_path() -> Path:
