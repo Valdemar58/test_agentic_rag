@@ -30,6 +30,10 @@ def test_number_detection_ignores_dates_sums_and_years() -> None:
     assert number_of("2026 г. был удачным") is None
     assert number_of("1.6.") is None and bare_number("1.6.") == "1.6" and bare_number("3)") == "3"
     assert bare_number("26") is None and bare_number("04.09.2026") is None
+    # даты с двузначным годом и десятичные числа — не пункты; «1.10.» и «10.2.» — пункты
+    assert number_of("07.09.26 21:14 ЧЕК 0005") is None and number_of("1.000 х 300.00 =300.00") is None
+    assert number_of("1.10. Порядок") == "1.10" and number_of("10.2 Сроки") == "10.2"
+    assert bare_number("07.09.26") is None and bare_number("1.10.") == "1.10"
 
 
 def test_bare_number_paragraph_is_attached_to_the_next_paragraph() -> None:
@@ -102,6 +106,37 @@ def test_wide_table_rows_become_column_value_records_within_limit() -> None:
     # все ячейки всех строк попали в записи
     body = "\n".join(chunk.body for chunk in tables)
     assert all(f"ячейка{r}_{c}_0" in body for r in range(1, 4) for c in (0, 39))
+
+
+def test_table_with_oversized_header_and_no_rows_is_still_split() -> None:
+    """Объединённая ячейка шапки на 2 000 токенов без строк: раньше уходила одним чанком."""
+    doc = DoclingDocument(name="спецификация")
+    doc.add_heading("Спецификация", level=1)
+    giant = " ".join(f"условие{i}" for i in range(900))
+    cells = [
+        TableCell(
+            text=giant,
+            start_row_offset_idx=0,
+            end_row_offset_idx=1,
+            start_col_offset_idx=0,
+            end_col_offset_idx=1,
+            column_header=True,
+        ),
+        TableCell(
+            text="Итого",
+            start_row_offset_idx=0,
+            end_row_offset_idx=1,
+            start_col_offset_idx=1,
+            end_col_offset_idx=2,
+            column_header=True,
+        ),
+    ]
+    doc.add_table(data=TableData(table_cells=cells, num_rows=1, num_cols=2))
+    doc.add_table(data=_wide_table(rows=2, cols=2, words_per_cell=3))
+    chunks = chunker().chunk(doc, ROOT, file_sha256=SHA)
+    tables = [chunk for chunk in chunks if chunk.kind == "table"]
+    assert len(tables) >= 3 and all(chunk.tokens <= SETTINGS.max_tokens for chunk in tables)
+    assert "условие0" in tables[0].body and "условие899" in "".join(chunk.body for chunk in tables)
 
 
 def test_narrow_table_still_split_by_rows_with_header() -> None:

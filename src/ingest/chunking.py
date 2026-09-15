@@ -45,8 +45,9 @@ _NUMBER_RE = re.compile(r"^\s*(?:(\d+(?:\.\d+)+)\.?|(\d+)[.)])(?=\s+\S)")
 _HEADER_NUMBER_RE = re.compile(r"^\s*(\d+(?:\.\d+)*)[.)]?(?=\s+\S)")
 # абзац или маркер списка из одного номера: «1.6.», «1.6», «3.», «3)»
 _BARE_NUMBER_RE = re.compile(r"^\s*(?:(\d+(?:\.\d+)+)\.?|(\d+)[.)])\s*$")
-# компонент из четырёх и более цифр — год или дата («04.09.2026»), а не номер пункта
-_LONG_COMPONENT_RE = re.compile(r"\d{4,}")
+# компонент из четырёх и более цифр — год или дата («04.09.2026»), а не номер пункта;
+# компонент с ведущим нулём — дата («07.09.26») или число («1.000»), номера пунктов так не пишут
+_LONG_COMPONENT_RE = re.compile(r"\d{4,}|(?:^|\.)0\d")
 _HASHES_RE = re.compile(r"^\s*(#+)\s*")
 _SPACES_RE = re.compile(r"[ \t ]+")
 _SENTENCE_RE = re.compile(r"(?<=[.!?;])\s+(?=[«\"(A-ZА-ЯЁ0-9])|\n+")
@@ -402,7 +403,10 @@ class StructuralChunker:
         header_tokens = self._count("\n".join(header))
         names = _cells(header[0]) if header else []
         if header_tokens >= limit:
-            return [part for row in rows for part in self._row_records(names, row, limit)] or [markdown]
+            # шапка сама шире лимита (гигантская объединённая ячейка): шапка — текстом, строки — записями
+            header_parts = self.split_fixed(" | ".join(name for name in names if name), limit)
+            header_parts.extend(part for row in rows for part in self._row_records(names, row, limit))
+            return header_parts or [markdown]
         parts: list[str] = []
         current: list[str] = []
         current_tokens = header_tokens
