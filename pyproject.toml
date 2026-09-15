@@ -36,6 +36,9 @@ dependencies = [
     "uvicorn[standard]>=0.32",
     "chainlit>=2.6",
     "huggingface-hub>=0.26",
+    # Модели манифеста экспорта и фейковый шлюз: инжест читает архив теми же pydantic-моделями,
+    # которыми экспорт-скрипт его пишет (workspace-пакет, свои зависимости лёгкие)
+    "tessa-export",
 ]
 
 [dependency-groups]
@@ -47,8 +50,6 @@ dev = [
     "respx>=0.22",
     "types-pyyaml",
     "types-openpyxl",
-    # Экспорт-скрипт — отдельный workspace-пакет с лёгкими зависимостями (для Docker-образа заказчика)
-    "tessa-export",
     "testcontainers[postgres]>=4.8",
     "fpdf2>=2.8",
 ]

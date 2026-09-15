@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -25,33 +25,7 @@ from db.session import build_engine, build_sessionmaker, session_scope
 
 pytestmark = pytest.mark.integration
 
-POSTGRES_IMAGE = "postgres:17.11-alpine3.23"
 EXPECTED_TABLES = {"app_user", "conversation", "message", "element", "feedback", "ingest_run", "indexed_file"}
-
-
-@pytest.fixture(scope="module")
-def database_url() -> Iterator[str]:
-    try:
-        from testcontainers.community.postgres import PostgresContainer
-    except ImportError:  # pragma: no cover
-        pytest.skip("testcontainers не установлен")
-    try:
-        container = PostgresContainer(POSTGRES_IMAGE, driver="asyncpg")
-        container.start()
-    except Exception as exc:  # noqa: BLE001 — нет Docker или образа: скип, а не падение
-        pytest.skip(f"Docker недоступен для testcontainers: {exc}")
-    try:
-        yield container.get_connection_url()
-    finally:
-        container.stop()
-
-
-def _alembic_config(url: str) -> Config:
-    config = Config(str(ROOT / "alembic.ini"))
-    config.set_main_option("script_location", str(ROOT / "alembic"))
-    config.set_main_option("sqlalchemy.url", url)
-    config.attributes["configure_logger"] = False
-    return config
 
 
 async def _table_names(url: str) -> set[str]:
@@ -102,8 +76,11 @@ async def _roundtrip_rows(url: str) -> int:
         await engine.dispose()
 
 
-def test_clean_database_upgrade_head_creates_schema_and_diff_is_empty(database_url: str) -> None:
-    config = _alembic_config(database_url)
+def test_clean_database_upgrade_head_creates_schema_and_diff_is_empty(
+    fresh_database_url: str, make_alembic_config: Callable[[str], Config]
+) -> None:
+    database_url = fresh_database_url
+    config = make_alembic_config(database_url)
     assert asyncio.run(_table_names(database_url)) == set()
 
     command.upgrade(config, "head")

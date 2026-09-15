@@ -11,6 +11,7 @@ import pytest
 import structlog
 
 from contracts.card_service import CardServiceContract
+from ingest.cards import CardRecord
 from synthetic.corpus import generate_corpus
 from tessa_export.storage import CARDS_DIR, export_dir
 
@@ -36,3 +37,8 @@ def test_synthetic_cards_validate_against_card_data(contract: CardServiceContrac
         sections = card.model_dump()["sections"]
         assert sections["DocumentCommonInfo"]["fields"]["Subject"]
         assert "OutgoingRefDocs" in sections and "IncomingRefDocs" in sections
+        # модель инжеста читает ровно ту форму, которую отдаёт реальная схема CardData
+        dumped = card.model_dump(mode="json")
+        record = CardRecord.model_validate(dumped)
+        assert record.common_text("Subject") == sections["DocumentCommonInfo"]["fields"]["Subject"]
+        assert {str(file.row_id) for file in record.files} == {file["row_id"] for file in dumped["files"]}
