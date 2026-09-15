@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -101,11 +102,21 @@ def detect_gpu_total_mib(runner: CommandRunner) -> int:
     return parse_gpu_total_mib(result.stdout)
 
 
-def compose_environment(config: AppConfig, total_mib: int) -> dict[str, str]:
+def docker_runs_in_wsl(platform: str = sys.platform) -> bool:
+    """Docker Desktop на Windows выполняет контейнеры в WSL2, где нет UVA (отображаемой хост-памяти)."""
+    return platform == "win32"
+
+
+def compose_environment(config: AppConfig, total_mib: int, *, wsl: bool | None = None) -> dict[str, str]:
     """Переменные для docker-compose.yml, вычисленные из конфига и объёма памяти карты."""
     utilization = gpu_memory_utilization(config.gpu.vllm_memory_gib, total_mib, config.gpu.max_utilization)
     qwen, dots = config.vllm.qwen, config.vllm.dots
+    in_wsl = docker_runs_in_wsl() if wsl is None else wsl
+    # Новый GPU-раннер vLLM (V2) требует UVA; под WSL2 её нет → прежний раннер (V1). На Linux
+    # переменная не задаётся вовсе: vLLM выбирает раннер сам (пустое значение он не принимает).
+    wsl_only = {"VLLM_USE_V2_MODEL_RUNNER": "0"} if in_wsl else {}
     return {
+        **wsl_only,
         "MODELS_DIR": str(config.models.dir_absolute),
         "GPU_TOTAL_MIB": str(total_mib),
         "VLLM_GPU_MEMORY_UTILIZATION": f"{utilization:.3f}",

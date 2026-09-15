@@ -15,6 +15,7 @@ from common.stack import (
     compose_environment,
     conflicting_service,
     detect_gpu_total_mib,
+    docker_runs_in_wsl,
     gpu_memory_utilization,
     parse_running_services,
 )
@@ -74,8 +75,12 @@ def test_detect_gpu_total_mib_parses_nvidia_smi() -> None:
 
 def test_compose_environment_from_example_config() -> None:
     config = load_app_config(DEFAULT_CONFIG_PATH)
-    env = compose_environment(config, RTX_3080_MIB)
+    env = compose_environment(config, RTX_3080_MIB, wsl=False)
     assert env["VLLM_GPU_MEMORY_UTILIZATION"] == "0.875"
+    # на Linux переменная раннера не задаётся, под WSL2 — принудительно прежний раннер
+    assert "VLLM_USE_V2_MODEL_RUNNER" not in env
+    assert compose_environment(config, RTX_3080_MIB, wsl=True)["VLLM_USE_V2_MODEL_RUNNER"] == "0"
+    assert docker_runs_in_wsl("win32") and not docker_runs_in_wsl("linux")
     assert env["VLLM_QWEN_MODEL_PATH"] == "/models/Qwen3-8B-AWQ"
     assert env["VLLM_DOTS_MODEL_PATH"] == "/models/DotsMOCR"
     assert env["VLLM_QWEN_TOOL_CALL_PARSER"] == "hermes"
@@ -85,6 +90,7 @@ def test_compose_environment_from_example_config() -> None:
     for key in env:
         if key != "GPU_TOTAL_MIB":
             assert f"${{{key}" in compose_text, key
+    assert "- VLLM_USE_V2_MODEL_RUNNER\n" in compose_text
 
 
 def test_parse_running_services_accepts_array_and_ndjson() -> None:

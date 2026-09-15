@@ -19,10 +19,13 @@ x-vllm: &vllm
   restart: unless-stopped
   ipc: host
   environment:
-    HF_HUB_OFFLINE: "1"
-    TRANSFORMERS_OFFLINE: "1"
-    VLLM_NO_USAGE_STATS: "1"
-    DO_NOT_TRACK: "1"
+    - HF_HUB_OFFLINE=1
+    - TRANSFORMERS_OFFLINE=1
+    - VLLM_NO_USAGE_STATS=1
+    - DO_NOT_TRACK=1
+    # Без значения: передаётся из окружения только если задана. scripts/stack.py задаёт 0 под
+    # Docker Desktop/WSL2 (у нового раннера vLLM нет UVA); на Linux vLLM выбирает раннер сам.
+    - VLLM_USE_V2_MODEL_RUNNER
   volumes:
     - ${MODELS_DIR:-./models}:/models:ro
   deploy:
@@ -208,7 +211,8 @@ services:
     deploy:
       resources:
         limits:
-          memory: ${LANGFUSE_WEB_MEMORY_LIMIT:-1g}
+          # Node 24 отводит куче ~половину лимита cgroup; при 1 ГиБ web падает с heap out of memory
+          memory: ${LANGFUSE_WEB_MEMORY_LIMIT:-2g}
 
   langfuse-worker:
     image: langfuse/langfuse-worker:4.36.0
@@ -219,7 +223,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: ${LANGFUSE_WORKER_MEMORY_LIMIT:-1g}
+          memory: ${LANGFUSE_WORKER_MEMORY_LIMIT:-1536m}
 
   langfuse-postgres:
     # Отдельный от postgres-app: прикладная БД не делит контейнер с Langfuse (FR-9)
