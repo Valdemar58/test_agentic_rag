@@ -140,6 +140,7 @@ class Manifest(_Model):
     version: str = MANIFEST_VERSION
     created_at: datetime
     tool: str
+    source: str = Field(default="tessa", description="tessa — онлайн-экспорт; иначе офлайн-фильтр архива")
     synthetic: bool = Field(default=False, description="True для режима самопроверки: данные синтетические")
     seed_ids: list[UUID]
     traversal: dict[str, Any]
@@ -326,6 +327,7 @@ def build_manifest(
     *,
     synthetic: bool = False,
     now: datetime | None = None,
+    source: str = "tessa",
 ) -> Manifest:
     coverage = config.coverage
     documents = [
@@ -377,6 +379,7 @@ def build_manifest(
     return Manifest(
         created_at=now or datetime.now(UTC),
         tool=_package_name,
+        source=source,
         synthetic=synthetic,
         seed_ids=list(result.seed_ids),
         traversal=config.traversal.model_dump(),

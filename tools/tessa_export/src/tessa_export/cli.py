@@ -1,6 +1,9 @@
 """Командная строка экспорт-скрипта.
 
   tessa-export run --config config.yaml        экспорт из Тессы по конфигу
+  tessa-export filter --config config.yaml --source АРХИВ --output DIR
+                                               применить правила исключения и лимиты обхода из
+                                               конфига к уже полученному архиву, без Тессы
   tessa-export self-test [--output DIR]        проверка контейнера на синтетических данных
   tessa-export version
 
@@ -26,7 +29,7 @@ from tessa_export.external import ExternalCodeError
 from tessa_export.fake import build_demo_scenario
 from tessa_export.models import CardAccessError, GatewayConnectionError, GatewayError, TessaGateway
 from tessa_export.runner import ExportError, RunSummary, run_export
-from tessa_export.storage import LOG_NAME
+from tessa_export.storage import LOG_NAME, export_dir
 
 EXIT_OK = 0
 EXIT_FAILURE = 1
@@ -97,10 +100,15 @@ def _print_summary(summary: RunSummary) -> None:
 
 
 def _run_and_report(
-    config: ExportConfig, seed_ids: list[UUID], gateway: TessaGateway, *, synthetic: bool
+    config: ExportConfig,
+    seed_ids: list[UUID],
+    gateway: TessaGateway,
+    *,
+    synthetic: bool,
+    source: str = "tessa",
 ) -> int:
     try:
-        summary = run_export(config, seed_ids, gateway, synthetic=synthetic)
+        summary = run_export(config, seed_ids, gateway, synthetic=synthetic, source=source)
     except CardAccessError as exc:
         logger.error("Нет доступа: %s", exc)
         print(f"ОШИБКА ДОСТУПА: {exc}\nПроверьте логин/пароль в переменных окружения и права учётной записи.")
@@ -140,6 +148,48 @@ def command_run(args: argparse.Namespace, gateway_factory: GatewayFactory) -> in
     return _run_and_report(config, [card.id for card in seed], gateway, synthetic=False)
 
 
+def command_filter(args: argparse.Namespace) -> int:
+    """Офлайн-фильтр: тот же обход по правилам конфига, но карточки и файлы из готового архива."""
+    from tessa_export.gateway_archive import ArchiveGateway, ArchiveSource
+
+    try:
+        config = load_config(Path(args.config))
+        config.output_dir = Path(args.output)
+        seed = load_seed(config.seed_file)
+    except ConfigError as exc:
+        print(f"ОШИБКА КОНФИГУРАЦИИ: {exc}")
+        return EXIT_CONFIG
+    source_path = Path(args.source)
+    resolved = source_path.resolve()
+    export_root = export_dir(config.output_dir).resolve()
+    archive_target = (config.output_dir / config.archive_name).resolve()
+    if resolved in (export_root, archive_target) or export_root in resolved.parents:
+        print("ОШИБКА КОНФИГУРАЦИИ: источник лежит там, куда пишется результат; укажите другой --output")
+        return EXIT_CONFIG
+    log_path = setup_logging(config.output_dir, config.log_level)
+    logger.info(
+        "tessa-export %s: офлайн-фильтр архива %s по конфигу %s, лог %s",
+        _tool_version(),
+        source_path,
+        args.config,
+        log_path,
+    )
+    try:
+        gateway = ArchiveGateway(ArchiveSource(source_path))
+    except GatewayError as exc:
+        logger.error("Источник: %s", exc)
+        print(f"ОШИБКА КОНФИГУРАЦИИ: {exc}")
+        return EXIT_CONFIG
+    logger.info("В источнике %d документов", gateway.documents_in_source)
+    return _run_and_report(
+        config,
+        [card.id for card in seed],
+        gateway,
+        synthetic=False,
+        source=f"офлайн-фильтр архива {source_path.name}",
+    )
+
+
 def command_self_test(args: argparse.Namespace) -> int:
     output_dir = Path(args.output)
     config = ExportConfig.model_validate(
@@ -164,6 +214,14 @@ def build_parser() -> argparse.ArgumentParser:
     run = subparsers.add_parser("run", help="экспорт из Тессы по конфигу")
     run.add_argument("--config", required=True, help="путь к config.yaml")
     run.add_argument("--output", help="каталог результата (переопределяет output_dir из конфига)")
+    filter_cmd = subparsers.add_parser(
+        "filter", help="применить правила исключения из конфига к уже полученному архиву, без Тессы"
+    )
+    filter_cmd.add_argument("--config", required=True, help="путь к config.yaml")
+    filter_cmd.add_argument(
+        "--source", required=True, help="tessa_export.zip или распакованный каталог export/"
+    )
+    filter_cmd.add_argument("--output", required=True, help="каталог результата (не тот, где лежит источник)")
     self_test = subparsers.add_parser("self-test", help="проверка контейнера на синтетических данных")
     self_test.add_argument("--output", default="selftest_output", help="каталог результата самопроверки")
     subparsers.add_parser("version", help="версия инструмента")
@@ -177,6 +235,8 @@ def main(argv: list[str] | None = None, gateway_factory: GatewayFactory = _defau
         return EXIT_OK
     if args.command == "self-test":
         return command_self_test(args)
+    if args.command == "filter":
+        return command_filter(args)
     return command_run(args, gateway_factory)
 
 

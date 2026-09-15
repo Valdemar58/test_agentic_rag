@@ -22,7 +22,7 @@ links_graph.json + validation_report.md`. Ничего в Тессе не изм
 1. Загрузить образ:
 
    ```bash
-   docker load -i tessa-export-0.1.5.tar
+   docker load -i tessa-export-0.1.6.tar
    ```
 
 2. Положить рядом папки `config/` и `output/`. В `config/` — `config.yaml` и `seed_cards.yaml`.
@@ -40,7 +40,7 @@ links_graph.json + validation_report.md`. Ничего в Тессе не изм
 4. Проверить контейнер без доступа к Тессе (самопроверка на синтетических данных, ~10 секунд):
 
    ```bash
-   docker run --rm -v "$PWD/output:/output" tessa-export:0.1.5 self-test --output /output/selftest
+   docker run --rm -v "$PWD/output:/output" tessa-export:0.1.6 self-test --output /output/selftest
    ```
 
    Ожидаемый вывод заканчивается строкой `ИТОГ: сет ПРИГОДЕН`.
@@ -50,7 +50,7 @@ links_graph.json + validation_report.md`. Ничего в Тессе не изм
    ```bash
    docker run --rm --env-file tessa.env \
      -v "$PWD/config:/config:ro" -v "$PWD/output:/output" \
-     tessa-export:0.1.5 run --config /config/config.yaml
+     tessa-export:0.1.6 run --config /config/config.yaml
    ```
 
    Ход работы печатается на экран, полный лог — `output/tessa_export.log`.
@@ -85,6 +85,19 @@ exclude_rules:
 по типу не затрагивают (они выбраны явно); исключить seed-карточку можно только через `card_ids`
 или добавив к правилу `applies_to_seed: true`.
 
+Если полное замыкание уже скачано, повторно обращаться к Тессе не нужно: команда `filter`
+применяет правила и лимиты из конфига к готовому архиву и собирает точно такой же результат
+(манифест, отчёт, таблица отбора, архив), как дал бы онлайн-запуск:
+
+```bash
+docker run --rm -v "$PWD/config:/config:ro" -v "$PWD/output:/output" \
+  tessa-export:0.1.6 filter --config /config/config.yaml \
+  --source /output/tessa_export.zip --output /output/filtered
+```
+
+Результат в `output/filtered/`: `export/` и `tessa_export.zip`. Источником может быть и
+распакованный каталог `export/`.
+
 ## Коды завершения и что делать
 
 | Код | Смысл | Что делать |
@@ -114,8 +127,8 @@ exclude_rules:
 Из корня репозитория, с заданными `TESSA_SDK_PATH` и `CARD_SERVICE_PATH` (в `.env`):
 
 ```
-pwsh tools/tessa_export/build_image.ps1 -Version 0.1.5     # Windows
-tools/tessa_export/build_image.sh 0.1.5                     # Linux/macOS
+pwsh tools/tessa_export/build_image.ps1 -Version 0.1.6     # Windows
+tools/tessa_export/build_image.sh 0.1.6                     # Linux/macOS
 ```
 
 Скрипт собирает образ (SDK Тессы и схемы сервиса карточек подключаются через build-context и

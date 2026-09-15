@@ -34,7 +34,8 @@ def render_report(manifest: Manifest, report: ValidationReport) -> str:
         f"Создан: {manifest.created_at.isoformat()}. Seed-карточек: {len(manifest.seed_ids)}. "
         f"Обход: глубина ≤ {manifest.traversal.get('max_depth')}, "
         f"лимит {manifest.traversal.get('max_docs')}, "
-        f"направления {', '.join(manifest.traversal.get('directions', []))}.",
+        f"направления {', '.join(manifest.traversal.get('directions', []))}. "
+        f"Источник: {'Тесса (онлайн)' if manifest.source == 'tessa' else manifest.source}.",
         "",
         "## Сводка",
         "",

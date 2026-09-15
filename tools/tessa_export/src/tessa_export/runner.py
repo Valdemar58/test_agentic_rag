@@ -51,7 +51,12 @@ class RunSummary:
 
 
 def run_export(
-    config: ExportConfig, seed_ids: list[UUID], gateway: TessaGateway, *, synthetic: bool = False
+    config: ExportConfig,
+    seed_ids: list[UUID],
+    gateway: TessaGateway,
+    *,
+    synthetic: bool = False,
+    source: str = "tessa",
 ) -> RunSummary:
     export_root = export_dir(config.output_dir)
     if export_root.exists():
@@ -59,7 +64,7 @@ def run_export(
         shutil.rmtree(export_root)
     export_root.mkdir(parents=True, exist_ok=True)
 
-    logger.info("Проверяю подключение к Тессе")
+    logger.info("Проверяю источник данных: %s", source)
     gateway.check_connection()
 
     logger.info(
@@ -85,7 +90,7 @@ def run_export(
     logger.info("Проверяю скачанные файлы")
     inspect_records(export_root, file_records, config.files, config.coverage)
 
-    manifest = build_manifest(result, file_records, config, synthetic=synthetic)
+    manifest = build_manifest(result, file_records, config, synthetic=synthetic, source=source)
     graph = build_links_graph(result)
     manifest_path = export_root / MANIFEST_NAME
     links_graph_path = export_root / LINKS_GRAPH_NAME
