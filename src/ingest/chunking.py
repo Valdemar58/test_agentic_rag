@@ -3,13 +3,17 @@
 Структурный чанкер идёт по элементам DoclingDocument и ведёт «хлебные крошки»:
 корневые крошки от вызывающего (например, «Приказ №144 от 15.01.2026» или «… → Приложение …»)
 → заголовки разделов (SectionHeader/Title; для dots.mocr уровень берётся из «#»/«##» в тексте)
-→ нумерованные разделы («1. Утверждение» → «Раздел 1. Утверждение»)
+→ нумерованные разделы («1. Утверждение» → «Раздел 1. Утверждение», «2.6 Гарантии» → «п. 2.6 Гарантии»)
 → пункт («3.2. …» → «п. 3.2»; номер берётся из маркера ListItem или из начала текста).
+Номером пункта считается «1.», «1)», «1.1.» или «1.1» перед текстом; даты («04.09.2026»), суммы
+(«26 702 руб.») и годы («2026 г.») номерами не считаются. Абзац из одного номера («1.6.») отдаёт
+номер следующему абзацу. Крошки длиннее `breadcrumb_max_words` слов обрезаются.
 Чанк уровня child — абзац/пункт: соседние абзацы с одинаковыми крошками склеиваются, пока чанк
 короче `min_tokens`; абзац длиннее `max_tokens` режется по предложениям с перекрытием.
 Таблицы — отдельные чанки в markdown с крошками своего раздела; длинная таблица режется по строкам
-с повторением шапки. Документ без заголовков и нумерации — фоллбэк: окна `max_tokens` с
-перекрытием `overlap_tokens` по предложениям. Токены считаются токенайзером bge-m3.
+с повторением шапки, а строка шире лимита — в записи «колонка: значение». Документ без заголовков
+и нумерации — фоллбэк: окна `max_tokens` с перекрытием `overlap_tokens` по предложениям.
+Токены считаются токенайзером bge-m3.
 
 `section_key` чанка — путь разделов без пункта: по нему собирается parent (задача 4.4).
 """
@@ -29,11 +33,20 @@ ChunkKind = Literal["text", "table"]
 Strategy = Literal["structural", "fixed"]
 SECTION_PREFIX = "Раздел"
 CLAUSE_PREFIX = "п."
+ELLIPSIS = "…"
 TABLE_HEADER_LINES = 2
+RECORD_SEPARATOR = ": "
 SKIPPED_LABELS = frozenset({"page_header", "page_footer", "picture"})
 HEADER_LABELS = frozenset({"section_header", "title"})
 
-_NUMBER_RE = re.compile(r"^\s*(\d+(?:\.\d+)*)[.)]?(?=\s|$)")
+# «1.1. текст», «1.1 текст», «1. текст», «1) текст»; но не «26 702 руб.», не «04.09.2026», не «2026 г.»
+_NUMBER_RE = re.compile(r"^\s*(?:(\d+(?:\.\d+)+)\.?|(\d+)[.)])(?=\s+\S)")
+# заголовок Docling: допускается и «2 СРОКИ И УСЛОВИЯ» без точки после номера
+_HEADER_NUMBER_RE = re.compile(r"^\s*(\d+(?:\.\d+)*)[.)]?(?=\s+\S)")
+# абзац или маркер списка из одного номера: «1.6.», «1.6», «3.», «3)»
+_BARE_NUMBER_RE = re.compile(r"^\s*(?:(\d+(?:\.\d+)+)\.?|(\d+)[.)])\s*$")
+# компонент из четырёх и более цифр — год или дата («04.09.2026»), а не номер пункта
+_LONG_COMPONENT_RE = re.compile(r"\d{4,}")
 _HASHES_RE = re.compile(r"^\s*(#+)\s*")
 _SPACES_RE = re.compile(r"[ \t ]+")
 _SENTENCE_RE = re.compile(r"(?<=[.!?;])\s+(?=[«\"(A-ZА-ЯЁ0-9])|\n+")
@@ -93,9 +106,29 @@ def _page(item: Any) -> int | None:
     return int(prov[0].page_no) if prov else None
 
 
-def _number_of(text: str) -> str | None:
-    match = _NUMBER_RE.match(text)
-    return match.group(1) if match else None
+def _clause_number(match: re.Match[str] | None) -> str | None:
+    if match is None:
+        return None
+    number = match.group(1) or match.group(2)
+    return None if number is None or _LONG_COMPONENT_RE.search(number) else number
+
+
+def number_of(text: str) -> str | None:
+    """Номер пункта в начале текста («1.1. …» → «1.1»), иначе None."""
+    return _clause_number(_NUMBER_RE.match(text))
+
+
+def header_number_of(text: str) -> str | None:
+    """Номер в заголовке: как у пункта, но допускается «2 СРОКИ И УСЛОВИЯ» без точки."""
+    match = _HEADER_NUMBER_RE.match(text)
+    if match is None or _LONG_COMPONENT_RE.search(match.group(1)):
+        return None
+    return match.group(1)
+
+
+def bare_number(text: str) -> str | None:
+    """Текст, состоящий из одного номера («1.6.» → «1.6»), иначе None."""
+    return _clause_number(_BARE_NUMBER_RE.match(text))
 
 
 def sentences(text: str) -> list[str]:
@@ -112,6 +145,7 @@ class StructuralChunker:
     def _units(self, document: Any) -> list[_Unit]:
         units: list[_Unit] = []
         skip_deeper_than: int | None = None
+        carried_number: str | None = None  # номер из абзаца вида «1.6.» без текста
         for item, level in document.iterate_items(with_groups=True):
             if skip_deeper_than is not None:
                 if level > skip_deeper_than:
@@ -135,29 +169,54 @@ class StructuralChunker:
                 header_level = len(hashes.group(1)) if hashes else int(getattr(item, "level", 1) or 1)
                 text = _clean(_HASHES_RE.sub("", raw))
                 units.append(
-                    _Unit("header", text, [item.self_ref], _page(item), header_level, _number_of(text))
+                    _Unit("header", text, [item.self_ref], _page(item), header_level, header_number_of(text))
                 )
                 continue
             text = _clean(raw)
             number = None
             marker = getattr(item, "marker", None)
             if label == "list_item" and getattr(item, "enumerated", False) and marker:
-                number = _number_of(marker)
-                if number is not None and _number_of(text) is None:
+                number = bare_number(marker)
+                if number is not None and number_of(text) is None:
                     text = f"{marker.strip()} {text}"
             if number is None:
-                number = _number_of(text)
+                number = number_of(text)
+            if number is None and (bare := bare_number(text)) is not None:
+                carried_number = bare
+                continue
+            if number is None and carried_number is not None:
+                number, text = carried_number, f"{carried_number}. {text}"
+            carried_number = None
             units.append(_Unit("paragraph", text, [item.self_ref], _page(item), number=number))
         return units
+
+    def _rest_after_number(self, text: str) -> str:
+        return _HEADER_NUMBER_RE.sub("", text, count=1).strip()
 
     def _is_section_title(self, unit: _Unit) -> bool:
         """Короткий абзац с одним числом («1. Утверждение») — заголовок раздела, а не пункт."""
         if unit.number is None or "." in unit.number:
             return False
-        rest = _NUMBER_RE.sub("", unit.text, count=1).strip()
+        rest = self._rest_after_number(unit.text)
         if not rest or rest.endswith((".", ";", ":")):
             return False
         return len(rest.split()) <= self._settings.section_title_max_words
+
+    def _short(self, text: str) -> str:
+        words = text.split()
+        limit = self._settings.breadcrumb_max_words
+        return text if len(words) <= limit else " ".join(words[:limit]) + ELLIPSIS
+
+    def _header_crumb(self, unit: _Unit) -> str:
+        """«3. Контроль» → «Раздел 3. Контроль»; «2.6 Гарантии» → «п. 2.6 Гарантии»; длинный → «п. 2.6»."""
+        if unit.number is None:
+            return self._short(unit.text)
+        if "." not in unit.number:
+            return self._short(f"{SECTION_PREFIX} {unit.text}")
+        rest = self._rest_after_number(unit.text)
+        if rest and len(rest.split()) <= self._settings.section_title_max_words:
+            return f"{CLAUSE_PREFIX} {unit.number} {rest}"
+        return f"{CLAUSE_PREFIX} {unit.number}"
 
     # ---------- сборка чанков ----------
 
@@ -210,8 +269,7 @@ class StructuralChunker:
                     level = unit.level
                 while stack and stack[-1][0] >= level:
                     stack.pop()
-                crumb = f"{SECTION_PREFIX} {unit.text}" if unit.number else unit.text
-                stack.append((level, crumb, unit.text, promoted))
+                stack.append((level, self._header_crumb(unit), unit.text, promoted))
                 continue
             section = tuple(item[1] for item in stack)
             section_key = self._settings.breadcrumb_separator.join(section)
@@ -242,7 +300,7 @@ class StructuralChunker:
         self, units: list[_Unit], root_crumbs: tuple[str, ...], title: str | None, file_sha256: str
     ) -> list[Chunk]:
         chunks: list[Chunk] = []
-        crumbs = root_crumbs + ((title,) if title else ())
+        crumbs = root_crumbs + ((self._short(title),) if title else ())
         text_units = [unit for unit in units if unit.kind != "table"]
         if text_units:
             draft = _Draft(crumbs, "", title, None, page_no=text_units[0].page_no)
@@ -263,10 +321,7 @@ class StructuralChunker:
         prefix = self._settings.breadcrumb_separator.join(draft.breadcrumbs)
         budget = max(self._settings.max_tokens - self._count(prefix), self._settings.overlap_tokens + 1)
         body = "\n".join(draft.parts)
-        if kind == "table":
-            bodies = self._split_table(body, budget)
-        else:
-            bodies = self.split_fixed(body, budget)
+        bodies = self.split_table(body, budget) if kind == "table" else self.split_fixed(body, budget)
         chunks: list[Chunk] = []
         for offset, part in enumerate(bodies):
             ordinal = start + offset
@@ -337,18 +392,28 @@ class StructuralChunker:
             pieces.append(" ".join(current))
         return pieces
 
-    def _split_table(self, markdown: str, limit: int) -> list[str]:
-        """Длинная таблица режется по строкам; шапка (первые строки markdown) повторяется."""
+    def split_table(self, markdown: str, limit: int | None = None) -> list[str]:
+        """Таблица по строкам с повторением шапки; строка шире лимита — записями «колонка: значение»."""
+        limit = limit or self._settings.max_tokens
         if self._count(markdown) <= limit:
             return [markdown]
         lines = markdown.splitlines()
         header, rows = lines[:TABLE_HEADER_LINES], lines[TABLE_HEADER_LINES:]
         header_tokens = self._count("\n".join(header))
+        names = _cells(header[0]) if header else []
+        if header_tokens >= limit:
+            return [part for row in rows for part in self._row_records(names, row, limit)] or [markdown]
         parts: list[str] = []
         current: list[str] = []
         current_tokens = header_tokens
         for row in rows:
             row_tokens = self._count(row)
+            if header_tokens + row_tokens > limit:
+                if current:
+                    parts.append("\n".join(header + current))
+                    current, current_tokens = [], header_tokens
+                parts.extend(self._row_records(names, row, limit))
+                continue
             if current and current_tokens + row_tokens > limit:
                 parts.append("\n".join(header + current))
                 current, current_tokens = [], header_tokens
@@ -357,6 +422,39 @@ class StructuralChunker:
         if current:
             parts.append("\n".join(header + current))
         return parts or [markdown]
+
+    def _row_records(self, names: list[str], row: str, limit: int) -> list[str]:
+        """Широкая строка таблицы → чанки из пар «колонка: значение», каждый в пределах лимита."""
+        cells = _cells(row)
+        pairs: list[str] = []
+        for index, cell in enumerate(cells):
+            if not cell:
+                continue
+            name = names[index] if index < len(names) and names[index] else f"колонка {index + 1}"
+            pairs.append(f"{name}{RECORD_SEPARATOR}{cell}")
+        parts: list[str] = []
+        current: list[str] = []
+        current_tokens = 0
+        for pair in pairs:
+            for piece in self._split_long(pair, limit):
+                piece_tokens = self._count(piece)
+                if current and current_tokens + piece_tokens > limit:
+                    parts.append("\n".join(current))
+                    current, current_tokens = [], 0
+                current.append(piece)
+                current_tokens += piece_tokens
+        if current:
+            parts.append("\n".join(current))
+        return parts
+
+
+def _cells(line: str) -> list[str]:
+    stripped = line.strip()
+    if stripped.startswith("|"):
+        stripped = stripped[1:]
+    if stripped.endswith("|"):
+        stripped = stripped[:-1]
+    return [cell.strip().strip("*").strip() for cell in stripped.split("|")]
 
 
 def _clean_table(markdown: str) -> str:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -148,6 +149,31 @@ def test_skipped_plan_and_parse_failure_and_empty_document(tmp_path: Path) -> No
     )
     outcome = pipeline.process_file(_meta(), _plan(tmp_path))
     assert outcome.status == "error" and "не дал текста" in (outcome.reason or "")
+
+
+class RouteAwareParser:
+    """Нативно — пустой документ, через VLM — нормальный: запасной маршрут для pdf без текста."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def parse(self, path: Path, route: str) -> ParseResult:
+        self.calls.append(route)
+        document = _document() if route == "vlm" else DoclingDocument(name="пустой")
+        return ParseResult(route=route, status="success", seconds=0.1, document=document, pages=1)  # type: ignore[arg-type]
+
+
+def test_pdf_without_native_text_falls_back_to_vlm(tmp_path: Path) -> None:
+    parser = RouteAwareParser()
+    pipeline, index = _pipeline(parser)
+    plan = _plan(tmp_path)
+    pdf = tmp_path / "скан с мусорным слоем.pdf"
+    pdf.write_bytes(b"%PDF-1.4")
+    plan = FilePlan(file=replace(plan.file, name=pdf.name, extension="pdf", path=pdf), role="main")
+    outcome = pipeline.process_file(_meta(), plan)
+    assert parser.calls == ["vlm", "vlm"] or parser.calls[-1] == "vlm"
+    assert outcome.indexed and outcome.route == "vlm" and outcome.chunks == 2
+    assert index.count_file(plan.file.row_id) == 2
 
 
 def test_step_exception_becomes_error_outcome(tmp_path: Path) -> None:

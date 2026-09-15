@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import time
 from dataclasses import dataclass, field
@@ -28,6 +29,9 @@ logger = logging.getLogger(__name__)
 DOTS_PRESET = "dots_mocr"
 CHAT_COMPLETIONS_PATH = "/chat/completions"
 GIF_EXTENSION = ".gif"
+CACHE_DIR = "parsed"
+CACHE_VERSION = 1
+CACHED_STATUS = "cached"
 
 
 @dataclass(frozen=True)
@@ -152,11 +156,41 @@ class DocumentParser:
             return target
         return path
 
+    def _cache_path(self, path: Path, route: ParseRoute) -> Path | None:
+        """Ключ кэша — содержимое файла и маршрут; смена версии кэша делает старые записи невидимыми."""
+        if not self._config.ingest.parse_cache:
+            return None
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()[:32]
+        return self._work_dir / CACHE_DIR / f"{digest}-{route}-v{CACHE_VERSION}.json"
+
+    def _load_cached(self, cache_path: Path | None, route: ParseRoute, started: float) -> ParseResult | None:
+        if cache_path is None or not cache_path.is_file():
+            return None
+        from docling_core.types.doc.document import DoclingDocument
+
+        try:
+            document: Any = DoclingDocument.load_from_json(cache_path)
+        except Exception as exc:  # noqa: BLE001 — битый кэш просто не используется
+            logger.warning("Кэш разбора %s не читается (%s), разбираю заново", cache_path.name, exc)
+            return None
+        return ParseResult(
+            route=route,
+            status=CACHED_STATUS,
+            seconds=time.perf_counter() - started,
+            document=document,
+            pages=int(document.num_pages()),
+        )
+
     def parse(self, path: Path, route: ParseRoute) -> ParseResult:
-        """Разбирает файл выбранным конвейером; сбой — в `errors`, без исключения."""
+        """Разбирает файл выбранным конвейером (или берёт из кэша); сбой — в `errors`, без исключения."""
         from docling.datamodel.base_models import ConversionStatus
 
         started = time.perf_counter()
+        cache_path = self._cache_path(path, route)
+        cached = self._load_cached(cache_path, route, started)
+        if cached is not None:
+            logger.info("Разбор %s (%s) взят из кэша", path.name, route)
+            return cached
         try:
             source = self._prepare_source(path, route)
             converter = self._vlm_converter() if route == "vlm" else self._native_converter()
@@ -188,6 +222,9 @@ class DocumentParser:
             )
         else:
             logger.info("Разобран %s (%s): %s, страниц %d, %.1f с", path.name, route, status, pages, seconds)
+            if cache_path is not None:
+                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                document.save_as_json(cache_path)
         return ParseResult(
             route=route, status=status, seconds=seconds, document=document, pages=pages, errors=errors
         )

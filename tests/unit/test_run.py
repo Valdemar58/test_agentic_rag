@@ -104,11 +104,14 @@ class MemoryRegistry:
 
 
 class CountingParser:
-    def __init__(self) -> None:
+    def __init__(self, fail_names: set[str] | None = None) -> None:
         self.calls: list[str] = []
+        self.fail_names = fail_names or set()
 
     def parse(self, path: Path, route: ParseRoute) -> ParseResult:
         self.calls.append(path.name)
+        if path.name in self.fail_names:
+            raise RuntimeError(f"битый файл {path.name}")
         doc = DoclingDocument(name=path.stem)
         doc.add_heading(path.stem, level=1)
         doc.add_heading("1. Раздел", level=2)
@@ -221,6 +224,30 @@ def test_incremental_runs_reindex_only_changed_files(tmp_path: Path) -> None:
     # --force переразбирает всё
     forced = _run(_runner(output, parser, registry, index, force=True))
     assert forced.indexed == 2 and forced.unchanged == 0 and len(parser.calls) == 5 and index.count() == 4
+
+
+def test_one_broken_file_does_not_stop_the_run_and_is_reported(tmp_path: Path) -> None:
+    """AC-3.1: ошибка одного файла — в отчёте с причиной, остальные проиндексированы, прогон partial."""
+    output = tmp_path / "corpus"
+    _export(output)
+    parser = CountingParser(fail_names={"ДокШаблон Приказ №144.docx"})
+    registry, index = MemoryRegistry(), ChunkIndex(QdrantClient(":memory:"), CONFIG.qdrant, 8)
+    report = _run(_runner(output, parser, registry, index))
+    assert report.outcome == "partial" and (report.indexed, report.failed, report.skipped) == (1, 1, 2)
+    assert index.count() == 2 and report.success_share == 0.5
+    failed = next(outcome for outcome in report.outcomes if outcome.status == "error")
+    assert failed.plan.file.name == "ДокШаблон Приказ №144.docx" and "битый файл" in (failed.reason or "")
+    assert any("битый файл" in line or "ошибка ×1" in line for line in report.summary_lines())
+    entry = registry.rows[(ORDER, failed.plan.file.row_id)]
+    assert entry.status == "error" and entry.reason == failed.reason and entry.chunk_count == 0
+    assert registry.runs[1][0] == "partial" and registry.runs[1][1].files_failed == 1
+
+    # файл починили (новый sha256) — следующий прогон индексирует только его
+    _export(output, order_text="Приказ исправлен")
+    parser.fail_names.clear()
+    report = _run(_runner(output, parser, registry, index))
+    assert report.outcome == "success" and (report.indexed, report.unchanged, report.failed) == (1, 1, 0)
+    assert index.count() == 4
 
 
 def test_card_change_updates_payload_without_reparse_and_vanished_file_is_removed(tmp_path: Path) -> None:

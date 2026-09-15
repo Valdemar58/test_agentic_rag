@@ -35,6 +35,8 @@ from ingest.tokens import TokenCounter
 
 logger = logging.getLogger(__name__)
 
+PDF_EXTENSION = "pdf"
+
 
 @dataclass(frozen=True)
 class FileOutcome:
@@ -96,6 +98,27 @@ class IngestPipeline:
         try:
             route = decision or choose_route(plan.file, self._config.ingest)
             result = self._parser.parse(plan.file.path, route.route)
+            chunks = (
+                self._chunker.chunk(
+                    result.document, root_crumbs(document, plan), file_sha256=plan.file.sha256
+                )
+                if result.ok
+                else []
+            )
+            if not chunks and route.route == "native" and plan.file.extension == PDF_EXTENSION:
+                # текстовый слой был, а текста нет (пустой или мусорный слой): пробуем распознать страницы
+                logger.warning("Нативный разбор %s не дал текста — пробую dots.mocr", plan.file.relative_path)
+                route = RouteDecision(
+                    "vlm", f"{route.reason}; нативный разбор без текста → dots.mocr", route.text_layer
+                )
+                result = self._parser.parse(plan.file.path, route.route)
+                chunks = (
+                    self._chunker.chunk(
+                        result.document, root_crumbs(document, plan), file_sha256=plan.file.sha256
+                    )
+                    if result.ok
+                    else []
+                )
             if not result.ok:
                 details = "; ".join(result.errors) or "без деталей"
                 return FileOutcome(
@@ -106,9 +129,6 @@ class IngestPipeline:
                     seconds=time.perf_counter() - started,
                     parse_errors=result.errors,
                 )
-            chunks = self._chunker.chunk(
-                result.document, root_crumbs(document, plan), file_sha256=plan.file.sha256
-            )
             if not chunks:
                 return FileOutcome(
                     plan=plan,

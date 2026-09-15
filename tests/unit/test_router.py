@@ -11,9 +11,9 @@ from pypdf import PdfReader, PdfWriter
 
 from common.config import DEFAULT_CONFIG_PATH, load_app_config
 from ingest.corpus import CorpusFile
-from ingest.router import choose_route, pdf_text_layer
+from ingest.router import choose_route, mixed_script_share, pdf_text_layer
 from synthetic import texts
-from synthetic.documents import pdf_bytes, scan_pdf_bytes
+from synthetic.documents import DocumentText, pdf_bytes, scan_pdf_bytes
 
 SETTINGS = load_app_config(DEFAULT_CONFIG_PATH).ingest
 
@@ -73,6 +73,19 @@ def test_mixed_pdf_follows_page_share_threshold(tmp_path: Path) -> None:
         tmp_path, "сканы.pdf", _mixed_pdf(text_pdf, scan_pdf_bytes(texts.ORDER_109), 3 * text_pages)
     )
     assert choose_route(mostly_scan, SETTINGS).route == "vlm"
+
+
+def test_garbage_text_layer_from_foreign_ocr_goes_to_vlm(tmp_path: Path) -> None:
+    """Слой чужого OCR: кириллица с латинскими буквами внутри слов — страница считается сканом."""
+    garbage_line = "прихOд прOдаха смена gслUга автOстOянки ссмма БЕз ндс БЕзllRличнь пOл9читЕ пOдRрOк"
+    garbage = DocumentText(title="КАССOВЫЙ ЧЕК", preamble=(garbage_line,) * 6)
+    decision = choose_route(_file(tmp_path, "чек.pdf", pdf_bytes(garbage)), SETTINGS)
+    assert decision.route == "vlm" and decision.text_layer is not None
+    assert decision.text_layer.garbage_pages == 1 and "мусорный слой" in decision.reason
+    assert mixed_script_share("прихOд прOдаха обычное слово") == 0.5
+    assert mixed_script_share("Обычный русский текст, ООО «Ромашка», ГОСТ 12.3") == 0.0
+    clean = choose_route(_file(tmp_path, "приказ.pdf", pdf_bytes(texts.ORDER_144)), SETTINGS)
+    assert clean.route == "native" and clean.text_layer is not None and clean.text_layer.garbage_pages == 0
 
 
 def test_office_formats_native_images_vlm_broken_pdf_vlm(tmp_path: Path) -> None:

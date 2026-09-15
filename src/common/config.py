@@ -179,6 +179,7 @@ class ChunkingSettings(StrictModel):
     min_tokens: int = Field(ge=0, description="Короче этого — чанк склеивается с соседом")
     breadcrumb_separator: str = Field(description="Разделитель хлебных крошек в тексте чанка")
     section_title_max_words: int = Field(gt=0, description="Короткий нумерованный абзац = заголовок раздела")
+    breadcrumb_max_words: int = Field(gt=0, description="Крошка длиннее стольких слов обрезается с «…»")
     parent_max_tokens: int = Field(
         gt=0, description="Предел parent-чанка (раздела); длиннее — несколько окон"
     )
@@ -258,6 +259,12 @@ class IngestSettings(StrictModel):
     text_layer_min_page_share: float = Field(
         ge=0, le=1, description="Минимальная доля страниц с текстовым слоем для нативного разбора pdf"
     )
+    text_layer_max_mixed_script_share: float = Field(
+        ge=0,
+        le=1,
+        description="Доля слов со смесью кириллицы и латиницы, выше которой слой считается мусорным",
+    )
+    parse_cache: bool = Field(description="Кэшировать разобранные DoclingDocument в work_dir (JSON)")
     vlm: VlmSettings
     docling: DoclingSettings
     files: FileRulesSettings
