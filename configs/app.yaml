@@ -1,0 +1,55 @@
+# Единый конфиг стенда (NFR-4). Все параметры моделей, стенда и приложения — здесь.
+# Секреты и пути к внешнему коду сюда не попадают: они читаются из переменных окружения (.env).
+# Секции приложения (БД, сервис карточек, чанкинг, поиск, агент) добавляются задачей 3.3.
+
+gpu:
+  # Бюджет VRAM целевой карты приёмки (RTX 3080, 12 ГиБ). Действует на любой карте: scripts/stack.py
+  # читает фактический объём памяти GPU и пересчитывает долю --gpu-memory-utilization так, чтобы
+  # vLLM получал одинаковый объём в гибибайтах и на 12 ГиБ, и на 16 ГиБ карте разработки.
+  vram_budget_gib: 12.0
+  # Сколько из бюджета отдаётся серверу vLLM (веса + активации + KV-кэш). Остаток бюджета —
+  # контекст CUDA, драйвер и запас. Qwen3-8B AWQ: веса 5,7 ГиБ, KV-кэш ~144 КиБ/токен →
+  # при 10,5 ГиБ остаётся ~3,5 ГиБ под KV-кэш, т.е. более 20 тысяч токенов контекста.
+  vllm_memory_gib: 10.5
+  # Предохранитель: доля памяти карты, выше которой vLLM не поднимается даже на карте меньше бюджета.
+  max_utilization: 0.95
+
+vllm:
+  # Профиль runtime: Qwen3-8B AWQ, OpenAI-совместимый endpoint с tool calling.
+  qwen:
+    served_model_name: qwen3-8b
+    port: 8000
+    max_model_len: 16384
+    max_num_seqs: 4
+    tool_call_parser: hermes
+    reasoning_parser: qwen3
+  # Профиль ingest: dots.mocr для сканов (взаимоисключён с runtime — бюджет 12 ГиБ).
+  dots:
+    served_model_name: dots-mocr
+    port: 8001
+    max_model_len: 16384
+    max_num_seqs: 2
+
+models:
+  # Общий каталог весов (bind-mount в контейнеры vLLM как /models). Загрузка — scripts/download_models.py,
+  # рантайм работает офлайн (HF_HUB_OFFLINE=1). Ревизии — commit на Hugging Face (NFR-3, NFR-5).
+  dir: models
+  qwen:
+    repo_id: Qwen/Qwen3-8B-AWQ
+    revision: 4da05a8edb55c6046cce958586c33b61da07bb79
+    local_name: Qwen3-8B-AWQ
+  dots:
+    repo_id: rednote-hilab/dots.mocr
+    revision: e539fbb52280393adc081b289ec597430a0f9031
+    # Без точки в имени каталога: требование модели (remote code не импортируется из пути с точкой).
+    local_name: DotsMOCR
+  embedding:
+    repo_id: BAAI/bge-m3
+    revision: 5617a9f61b028005a4858fdac845db406aefb181
+    local_name: bge-m3
+    # ONNX-копия весов (2,1 ГиБ) не нужна: инференс через transformers/sentence-transformers.
+    ignore_patterns: ["onnx/*"]
+  reranker:
+    repo_id: BAAI/bge-reranker-v2-m3
+    revision: 953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e
+    local_name: bge-reranker-v2-m3
