@@ -203,7 +203,10 @@ def test_errors_and_excluded_in_manifest(tmp_path: Path) -> None:
     gateway, seed = build_demo_scenario()
     gateway.card_errors[B] = CardAccessError("нет прав")
     config = _config()
-    config.exclude_rules.append(ExcludeRule(reason="без актов", doc_type_titles=["Акт"]))
+    # G — seed-карточка, поэтому правило должно явно распространяться на seed
+    config.exclude_rules.append(
+        ExcludeRule(reason="без актов", doc_type_titles=["Акт"], applies_to_seed=True)
+    )
     result, records = _walk_and_download(gateway, seed, tmp_path, config)
     manifest = build_manifest(result, records, config)
     assert manifest.exclude_rules == 1

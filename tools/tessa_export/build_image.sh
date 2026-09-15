@@ -4,7 +4,7 @@
 # Пути к внешнему коду: TESSA_SDK_PATH и CARD_SERVICE_PATH (переменные окружения или .env).
 set -euo pipefail
 
-VERSION="${1:-0.1.4}"
+VERSION="${1:-0.1.5}"
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
 

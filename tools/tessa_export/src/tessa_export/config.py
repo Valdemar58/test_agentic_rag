@@ -83,6 +83,14 @@ class ExcludeRule(StrictModel):
     field: str | None = Field(default=None, description="Поле секции вида Секция.Поле")
     values: list[str] = Field(default_factory=list, description="Значения поля, при которых исключать")
     card_ids: list[UUID] = Field(default_factory=list, description="Явный список ID карточек")
+    applies_to_seed: bool = Field(
+        default=False,
+        description=(
+            "Применять ли критерии по типу/виду/полю к seed-карточкам. По умолчанию нет: seed выбран явно "
+            "и остаётся в сете (для отбора состава). Явный card_ids действует всегда. Для правил "
+            "безопасности (документы с ограничениями, §8.1.4) ставьте true"
+        ),
+    )
 
     @model_validator(mode="after")
     def _check_criteria(self) -> ExcludeRule:

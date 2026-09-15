@@ -115,12 +115,17 @@ class _Node:
     entry_paths: list[EntryPath]
 
 
-def match_exclusion(snapshot: CardSnapshot, rules: list[ExcludeRule]) -> str | None:
-    """Возвращает подпись сработавшего правила или None."""
+def match_exclusion(snapshot: CardSnapshot, rules: list[ExcludeRule], *, is_seed: bool = False) -> str | None:
+    """Возвращает подпись сработавшего правила или None.
+
+    Явный card_ids действует всегда; критерии по типу/виду/полю к seed-карточке применяются
+    только при applies_to_seed (seed выбран заказчиком явно и по умолчанию защищён)."""
     for index, rule in enumerate(rules, start=1):
         label = rule.reason or f"правило {index}"
         if snapshot.card_id in rule.card_ids:
             return label
+        if is_seed and not rule.applies_to_seed:
+            continue
         if snapshot.type_name and snapshot.type_name in rule.card_type_names:
             return label
         title = snapshot.common_text("DocTypeTitle")
@@ -188,7 +193,8 @@ class Walker:
                 )
                 continue
 
-            exclusion = match_exclusion(snapshot, self._rules)
+            is_seed = any(path.kind == "seed" for path in node.entry_paths)
+            exclusion = match_exclusion(snapshot, self._rules, is_seed=is_seed)
             if exclusion is not None:
                 logger.info("Карточка %s исключена: %s", card_id, exclusion)
                 result.excluded[card_id] = ExcludedCard(

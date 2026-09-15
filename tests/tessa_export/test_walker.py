@@ -117,6 +117,23 @@ def test_match_exclusion_criteria() -> None:
     assert status is not None
     assert match_exclusion(snapshot, [ExcludeRule(field="DocumentCommonInfo.StatusID", values=[status])])
     assert match_exclusion(snapshot, [ExcludeRule(doc_type_titles=["Договор"])]) is None
+    # seed защищён от критериев по типу/виду/полю, но не от явного card_ids
+    type_rule = ExcludeRule(reason="тип", card_type_names=["OrderMKC"])
+    assert match_exclusion(snapshot, [type_rule], is_seed=True) is None
+    assert match_exclusion(snapshot, [ExcludeRule(card_ids=[A])], is_seed=True) == "правило 1"
+    strict = ExcludeRule(reason="гриф", card_type_names=["OrderMKC"], applies_to_seed=True)
+    assert match_exclusion(snapshot, [strict], is_seed=True) == "гриф"
+
+
+def test_type_rule_keeps_seed_but_excludes_linked_cards_of_same_type() -> None:
+    gateway, seed = build_demo_scenario()
+    rules = [ExcludeRule(reason="без приказов", card_type_names=["OrderMKC"])]
+    result = _walk(gateway, seed, max_depth=2, rules=rules)
+    assert A in result.cards  # seed-приказ остаётся
+    assert B in result.excluded and B not in result.cards  # связанный приказ исключён
+    strict = [ExcludeRule(reason="без приказов", card_type_names=["OrderMKC"], applies_to_seed=True)]
+    result = _walk(gateway, seed, max_depth=2, rules=strict)
+    assert A in result.excluded and A not in result.cards
 
 
 def test_errors_do_not_stop_walk() -> None:
