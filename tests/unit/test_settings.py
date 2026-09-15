@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from common.config import DEFAULT_CONFIG_PATH, load_app_config
-from common.settings import Settings
+from common.settings import LOCALHOST, Settings
 
 ENV_KEYS = [
     "CARD_SERVICE_URL",
@@ -35,16 +35,18 @@ def clean_env(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
     return monkeypatch
 
 
-def test_defaults_point_to_localhost_and_ports_from_config(clean_env: pytest.MonkeyPatch) -> None:
+def test_defaults_point_to_loopback_and_ports_from_config(clean_env: pytest.MonkeyPatch) -> None:
     settings = Settings(_env_file=None)
     config = load_app_config(DEFAULT_CONFIG_PATH)
-    assert settings.database_url == "postgresql+asyncpg://rag:rag@localhost:5432/rag"
-    assert settings.resolve_qdrant_url() == "http://localhost:6333"
-    assert settings.resolve_llm_base_url(config) == f"http://localhost:{config.vllm.qwen.port}/v1"
-    assert settings.resolve_vlm_base_url(config) == f"http://localhost:{config.vllm.dots.port}/v1"
-    assert settings.resolve_mcp_url(config) == f"http://localhost:{config.mcp.port}{config.mcp.path}"
+    # 127.0.0.1, а не localhost: на Windows localhost сначала уходит в IPv6 и каждый запрос ждёт ~2 с
+    assert LOCALHOST == "127.0.0.1"
+    assert settings.database_url == f"postgresql+asyncpg://rag:rag@{LOCALHOST}:5432/rag"
+    assert settings.resolve_qdrant_url() == f"http://{LOCALHOST}:6333"
+    assert settings.resolve_llm_base_url(config) == f"http://{LOCALHOST}:{config.vllm.qwen.port}/v1"
+    assert settings.resolve_vlm_base_url(config) == f"http://{LOCALHOST}:{config.vllm.dots.port}/v1"
+    assert settings.resolve_mcp_url(config) == f"http://{LOCALHOST}:{config.mcp.port}{config.mcp.path}"
     assert settings.langfuse_enabled is False
-    assert settings.card_service_url == "http://localhost:8010"
+    assert settings.card_service_url.endswith(":8010")
 
 
 def test_environment_overrides_and_secrets_are_hidden(clean_env: pytest.MonkeyPatch) -> None:

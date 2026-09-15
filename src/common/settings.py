@@ -13,7 +13,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from common.config import AppConfig
 
-LOCALHOST = "localhost"
+# 127.0.0.1, а не localhost: на Windows имя сначала резолвится в IPv6 ::1, где порты Docker Desktop
+# не слушают, и каждый запрос к Qdrant/vLLM ждал ~2 с до отката на IPv4 (замер 2026-09-15)
+LOCALHOST = "127.0.0.1"
 ASYNCPG_DRIVER = "postgresql+asyncpg"
 
 

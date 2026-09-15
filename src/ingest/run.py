@@ -1,14 +1,12 @@
-"""Прогон инжеста по корпусу (FR-3, §4 ТЗ): инкрементально по хэшу, с реестром и уборкой.
+"""Прогон инжеста по корпусу (FR-3, §2, §4 ТЗ): две фазы под бюджет VRAM, инкрементально, с реестром.
 
-Для каждого файла из плана (правило файлов О5):
-- пропущенный правилом — записывается как `skipped`, его точки (если были) удаляются;
-- sha256 и отпечаток метаданных совпадают с реестром и прошлый статус `indexed` — `unchanged`,
-  файл не разбирается заново;
-- sha256 тот же, но карточка изменилась (например, приказ отменён) — обновляется только payload
-  точек в Qdrant, без повторного разбора и эмбеддингов;
-- иначе — полный конвейер (`IngestPipeline.process_file`), ошибка одного файла не прерывает прогон.
-После обхода удаляются точки и записи реестра файлов, исчезнувших из корпуса, и точки Qdrant,
-о которых реестр ничего не знает. Итоги прогона — в `ingest_run`.
+Фаза 1 «разбор» (профиль ingest поднят, dots.mocr занимает GPU): для каждого файла плана —
+пропуск правилом (`skipped`, старые точки удаляются), `unchanged` (sha256 и отпечаток метаданных
+совпадают с реестром), обновление только payload (файл тот же, карточка изменилась) или разбор
+и чанкинг (`PreparedFile`). Между фазами вызывается `before_index` — там оркестратор выгружает
+VLM. Фаза 2 «эмбеддинги и запись»: bge-m3 на освободившемся GPU, upsert в Qdrant, записи реестра.
+В конце удаляются точки и записи файлов, исчезнувших из корпуса, и точки без записи в реестре.
+Ошибка одного файла не прерывает прогон; итоги — в `ingest_run`.
 """
 
 from __future__ import annotations
@@ -17,7 +15,7 @@ import hashlib
 import logging
 import time
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 
 from common.config import AppConfig
@@ -25,13 +23,14 @@ from ingest.corpus import Corpus, CorpusIssue
 from ingest.files import FilePlan, plan_corpus_files
 from ingest.index import ChunkIndex
 from ingest.metadata import DocumentMetadata, file_metadata
-from ingest.pipeline import FileOutcome, IngestPipeline
+from ingest.pipeline import FileOutcome, IngestPipeline, PreparedFile
 from ingest.registry import FileKey, FileRecordInput, IndexedFileLike, Registry, RunCounters
+from ingest.router import RouteDecision, choose_route
 
 logger = logging.getLogger(__name__)
 
-UNCHANGED = "unchanged"
 METADATA_ONLY = "обновлены метаданные карточки без повторного разбора"
+BeforeIndexHook = Callable[[], None]
 
 
 @dataclass
@@ -46,6 +45,8 @@ class RunReport:
     removed: int = 0
     chunks_total: int = 0
     seconds: float = 0.0
+    parse_seconds: float = 0.0
+    index_seconds: float = 0.0
     outcomes: list[FileOutcome] = field(default_factory=list)
     removed_files: list[str] = field(default_factory=list)
     issues: list[CorpusIssue] = field(default_factory=list)
@@ -76,7 +77,8 @@ class RunReport:
             (outcome.reason or "").split(":")[0] for outcome in self.outcomes if outcome.status == "error"
         )
         lines = [
-            f"Прогон #{self.run_id}: {self.outcome}, {self.seconds:.0f} с",
+            f"Прогон #{self.run_id}: {self.outcome}, {self.seconds:.0f} с "
+            f"(разбор {self.parse_seconds:.0f} с, эмбеддинги и запись {self.index_seconds:.0f} с)",
             f"Файлов в плане: {self.files_total}; проиндексировано {self.indexed}, "
             f"без изменений {self.unchanged}, пропущено правилом {self.skipped}, "
             f"с ошибкой {self.failed}, удалено исчезнувших {self.removed}",
@@ -90,11 +92,54 @@ class RunReport:
         return lines
 
 
+@dataclass(frozen=True)
+class WorkPlan:
+    """Оценка объёма до запуска: нужна ли VLM и сколько файлов ждёт разбора."""
+
+    files_total: int
+    to_parse: int
+    vlm_files: int
+    unchanged: int
+    skipped: int
+
+    @property
+    def needs_vlm(self) -> bool:
+        return self.vlm_files > 0
+
+    def summary(self) -> str:
+        return (
+            f"файлов в плане {self.files_total}: разобрать {self.to_parse} "
+            f"(из них через dots.mocr {self.vlm_files}), без изменений {self.unchanged}, "
+            f"пропущено правилом {self.skipped}"
+        )
+
+
 def metadata_fingerprint(document: DocumentMetadata, plan: FilePlan) -> str:
     """Отпечаток всего, что попадает в payload помимо текста: метаданные карточки и роль файла."""
     file = file_metadata(plan, "-")
     payload = document.model_dump_json() + file.model_dump_json(exclude={"parse_route"})
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True)
+class _Work:
+    metadata: DocumentMetadata
+    plan: FilePlan
+    fingerprint: str
+    previous: IndexedFileLike | None
+    decision: RouteDecision | None
+
+    @property
+    def key(self) -> FileKey:
+        return (self.plan.file.card_id, self.plan.file.row_id)
+
+    @property
+    def unchanged(self) -> bool:
+        return (
+            self.previous is not None
+            and self.previous.status == "indexed"
+            and self.previous.sha256 == self.plan.file.sha256
+        )
 
 
 class IngestRunner:
@@ -114,14 +159,46 @@ class IngestRunner:
         self._index = index
         self._registry = registry
         self._force = force
+        self._work: list[_Work] | None = None
+        self._known: Mapping[FileKey, IndexedFileLike] = {}
 
-    async def run(self) -> RunReport:
+    async def _collect(self) -> list[_Work]:
+        if self._work is None:
+            corpus = self._corpus
+            plans = plan_corpus_files(corpus, self._config.ingest)
+            self._known = await self._registry.load()
+            work: list[_Work] = []
+            for document in corpus.documents:
+                metadata = self._pipeline.document_metadata(corpus, document)
+                for plan in plans[document.card_id]:
+                    key = (plan.file.card_id, plan.file.row_id)
+                    item = _Work(
+                        metadata, plan, metadata_fingerprint(metadata, plan), self._known.get(key), None
+                    )
+                    needs_parse = plan.indexed and (self._force or not item.unchanged)
+                    decision = choose_route(plan.file, self._config.ingest) if needs_parse else None
+                    work.append(_Work(metadata, plan, item.fingerprint, item.previous, decision))
+            self._work = work
+        return self._work
+
+    async def preflight(self) -> WorkPlan:
+        work = await self._collect()
+        to_parse = [item for item in work if item.decision is not None]
+        return WorkPlan(
+            files_total=len(work),
+            to_parse=len(to_parse),
+            vlm_files=sum(item.decision is not None and item.decision.route == "vlm" for item in to_parse),
+            unchanged=sum(item.plan.indexed and item.decision is None for item in work),
+            skipped=sum(not item.plan.indexed for item in work),
+        )
+
+    async def run(self, *, before_index: BeforeIndexHook | None = None) -> RunReport:
         started = time.perf_counter()
         corpus = self._corpus
         run_id = await self._registry.start_run(str(corpus.export_dir), synthetic=corpus.synthetic)
         report = RunReport(run_id=run_id, issues=list(corpus.issues))
         try:
-            await self._process(report)
+            await self._process(report, before_index)
             report.outcome = "success" if report.failed == 0 else "partial"
         except Exception as exc:  # noqa: BLE001 — итог прогона фиксируется в реестре, потом исключение наверх
             report.outcome = "failed"
@@ -135,111 +212,104 @@ class IngestRunner:
         await self._registry.finish_run(run_id, report.outcome, report.counters, error_text=report.error_text)
         return report
 
-    async def _process(self, report: RunReport) -> None:
-        corpus = self._corpus
-        plans = plan_corpus_files(corpus, self._config.ingest)
-        known = await self._registry.load()
-        seen: set[FileKey] = set()
+    async def _process(self, report: RunReport, before_index: BeforeIndexHook | None) -> None:
+        work = await self._collect()
+        report.files_total = len(work)
         self._index.ensure_collections()
-        total = sum(len(card_plans) for card_plans in plans.values())
-        report.files_total = total
+
+        # ---- фаза 1: разбор (VLM поднята) ----
+        phase_started = time.perf_counter()
+        prepared: list[tuple[_Work, PreparedFile]] = []
+        to_parse = sum(item.decision is not None for item in work)
+        logger.info("Фаза 1/2: разбор — файлов к разбору %d из %d", to_parse, len(work))
         position = 0
-        for document in corpus.documents:
-            metadata = self._pipeline.document_metadata(corpus, document)
-            for plan in plans[document.card_id]:
-                position += 1
-                key = (plan.file.card_id, plan.file.row_id)
-                seen.add(key)
-                previous = known.get(key)
-                fingerprint = metadata_fingerprint(metadata, plan)
-                logger.info("[%d/%d] %s", position, total, plan.file.relative_path)
-                if not plan.indexed:
-                    if previous is not None and previous.status == "indexed":
-                        self._index.delete_file(plan.file.row_id)
-                    report.skipped += 1
-                    await self._record(
-                        report.run_id, plan, "skipped", plan.skip_reason, metadata, fingerprint
-                    )
-                    continue
-                if (
-                    not self._force
-                    and previous is not None
-                    and previous.status == "indexed"
-                    and previous.sha256 == plan.file.sha256
-                ):
-                    if previous.metadata_sha256 == fingerprint:
-                        report.unchanged += 1
-                        report.chunks_total += previous.chunk_count
-                        await self._record(
-                            report.run_id,
-                            plan,
-                            "indexed",
-                            None,
-                            metadata,
-                            fingerprint,
-                            chunk_count=previous.chunk_count,
-                            file_role=previous.file_role,
-                            parse_route=previous.parse_route,
-                        )
-                        continue
-                    self._index.set_payload(
-                        plan.file.row_id, self._payload_fields(metadata, plan, previous.parse_route)
-                    )
-                    report.indexed += 1
-                    report.chunks_total += previous.chunk_count
-                    await self._record(
-                        report.run_id,
-                        plan,
-                        "indexed",
-                        METADATA_ONLY,
-                        metadata,
-                        fingerprint,
-                        chunk_count=previous.chunk_count,
-                        file_role=previous.file_role,
-                        parse_route=previous.parse_route,
-                    )
-                    continue
-                outcome = self._pipeline.process_file(metadata, plan)
-                report.outcomes.append(outcome)
-                if outcome.indexed:
-                    report.indexed += 1
-                    report.chunks_total += outcome.chunks
+        for item in work:
+            plan, previous = item.plan, item.previous
+            if not plan.indexed:
+                if previous is not None and previous.status == "indexed":
+                    self._index.delete_file(plan.file.row_id)
+                report.skipped += 1
+                await self._record(report.run_id, item, "skipped", plan.skip_reason)
+                continue
+            if item.decision is None:
+                assert previous is not None  # noqa: S101 — unchanged означает запись в реестре
+                if previous.metadata_sha256 == item.fingerprint:
+                    report.unchanged += 1
                 else:
-                    report.failed += 1
+                    self._index.set_payload(
+                        plan.file.row_id, self._payload_fields(item, previous.parse_route)
+                    )
+                    report.indexed += 1
+                report.chunks_total += previous.chunk_count
                 await self._record(
                     report.run_id,
-                    plan,
-                    outcome.status,
-                    outcome.reason,
-                    metadata,
-                    fingerprint,
-                    chunk_count=outcome.chunks,
-                    file_role=plan.role,
-                    parse_route=outcome.route,
+                    item,
+                    "indexed",
+                    None if previous.metadata_sha256 == item.fingerprint else METADATA_ONLY,
+                    chunk_count=previous.chunk_count,
+                    file_role=previous.file_role,
+                    parse_route=previous.parse_route,
                 )
-        await self._remove_vanished(report, known, seen)
+                continue
+            position += 1
+            logger.info("[%d/%d] %s", position, to_parse, plan.file.relative_path)
+            result = self._pipeline.prepare_file(item.metadata, plan, item.decision)
+            if isinstance(result, FileOutcome):
+                report.failed += 1
+                report.outcomes.append(result)
+                await self._record(
+                    report.run_id, item, result.status, result.reason, parse_route=result.route
+                )
+                continue
+            prepared.append((item, result))
+        report.parse_seconds = time.perf_counter() - phase_started
 
-    def _payload_fields(
-        self, metadata: DocumentMetadata, plan: FilePlan, parse_route: str | None
-    ) -> dict[str, object]:
-        file = file_metadata(plan, parse_route or "-")
-        fields: dict[str, object] = metadata.model_dump(mode="json")
+        # ---- между фазами: выгрузка VLM, GPU освобождается под эмбеддинги ----
+        if before_index is not None:
+            before_index()
+
+        # ---- фаза 2: эмбеддинги и запись ----
+        phase_started = time.perf_counter()
+        logger.info("Фаза 2/2: эмбеддинги и запись — файлов %d", len(prepared))
+        for position, (item, ready) in enumerate(prepared, start=1):
+            logger.info("[%d/%d] %s", position, len(prepared), item.plan.file.relative_path)
+            outcome = self._pipeline.index_prepared(ready)
+            report.outcomes.append(outcome)
+            if outcome.indexed:
+                report.indexed += 1
+                report.chunks_total += outcome.chunks
+            else:
+                report.failed += 1
+            await self._record(
+                report.run_id,
+                item,
+                outcome.status,
+                outcome.reason,
+                chunk_count=outcome.chunks,
+                file_role=item.plan.role,
+                parse_route=outcome.route,
+            )
+        report.index_seconds = time.perf_counter() - phase_started
+        await self._remove_vanished(report, {item.key for item in work})
+
+    def _payload_fields(self, item: _Work, parse_route: str | None) -> dict[str, object]:
+        file = file_metadata(item.plan, parse_route or "-")
+        fields: dict[str, object] = item.metadata.model_dump(mode="json")
         fields.update(file.model_dump(mode="json"))
         return fields
 
     async def _record(
         self,
         run_id: int,
-        plan: FilePlan,
+        item: _Work,
         status: str,
         reason: str | None,
-        metadata: DocumentMetadata,
-        fingerprint: str,
         *,
         chunk_count: int = 0,
         file_role: str | None = None,
         parse_route: str | None = None,
     ) -> None:
+        plan = item.plan
         await self._registry.record(
             run_id,
             [
@@ -255,22 +325,19 @@ class IngestRunner:
                     file_role=file_role or plan.role,
                     parse_route=parse_route,
                     chunk_count=chunk_count,
-                    doc_status=metadata.doc_status,
-                    metadata_sha256=fingerprint,
+                    doc_status=item.metadata.doc_status,
+                    metadata_sha256=item.fingerprint,
                 )
             ],
         )
 
-    async def _remove_vanished(
-        self, report: RunReport, known: Mapping[FileKey, IndexedFileLike], seen: set[FileKey]
-    ) -> None:
-        vanished = [key for key in known if key not in seen]
+    async def _remove_vanished(self, report: RunReport, seen: set[FileKey]) -> None:
+        vanished = [key for key in self._known if key not in seen]
         for card_id, row_id in vanished:
             self._index.delete_file(row_id)
             report.removed_files.append(f"{card_id}/{row_id}")
         if vanished:
             report.removed += await self._registry.remove(vanished)
-        # точки, о которых реестр не знает (например, реестр очищен) — тоже лишние
         known_rows = {str(row_id) for _, row_id in seen}
         for orphan in self._index.file_row_ids() - known_rows:
             self._index.delete_file(orphan)

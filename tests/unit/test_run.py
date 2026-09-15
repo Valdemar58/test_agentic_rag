@@ -182,7 +182,20 @@ def test_incremental_runs_reindex_only_changed_files(tmp_path: Path) -> None:
     parser, registry = CountingParser(), MemoryRegistry()
     index = ChunkIndex(QdrantClient(":memory:"), CONFIG.qdrant, 8)
 
-    first = _run(_runner(output, parser, registry, index))
+    runner = _runner(output, parser, registry, index)
+    work = asyncio.run(runner.preflight())
+    assert (work.files_total, work.to_parse, work.vlm_files, work.unchanged, work.skipped) == (4, 2, 0, 0, 2)
+    assert not work.needs_vlm and "разобрать 2" in work.summary()
+
+    # хук между фазами: все разборы уже сделаны, в индекс ещё ничего не записано
+    seen_at_hook: list[tuple[int, int]] = []
+
+    def before_index() -> None:
+        seen_at_hook.append((len(parser.calls), index.count()))
+
+    first = asyncio.run(runner.run(before_index=before_index))
+    assert seen_at_hook == [(2, 0)]
+    assert first.parse_seconds >= 0 and first.index_seconds >= 0
     # 4 файла в плане: docx приказа и записки индексируются, «Для печати» и pdf-копия — пропуск правилом
     assert (first.files_total, first.indexed, first.skipped, first.failed, first.unchanged) == (4, 2, 2, 0, 0)
     assert first.outcome == "success" and first.chunks_total == 4 and first.success_share == 1.0
@@ -193,7 +206,9 @@ def test_incremental_runs_reindex_only_changed_files(tmp_path: Path) -> None:
     assert len(skipped) == 2 and all(entry.reason for entry in skipped)
 
     # тот же корпус: ничего не разбирается, число точек не меняется (AC-3.3)
-    second = _run(_runner(output, parser, registry, index))
+    runner = _runner(output, parser, registry, index)
+    assert asyncio.run(runner.preflight()).to_parse == 0
+    second = _run(runner)
     assert (second.indexed, second.unchanged, second.failed) == (0, 2, 0) and second.chunks_total == 4
     assert len(parser.calls) == 2 and index.count() == 4 and index.count(parents=True) == 2
 

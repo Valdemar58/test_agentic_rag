@@ -17,7 +17,7 @@ from ingest.files import FilePlan
 from ingest.index import ChunkIndex
 from ingest.metadata import DocumentMetadata
 from ingest.parsing import ParseResult
-from ingest.pipeline import IngestPipeline
+from ingest.pipeline import IngestPipeline, PreparedFile
 from ingest.tokens import WordTokenCounter
 
 CONFIG = load_app_config(DEFAULT_CONFIG_PATH)
@@ -120,7 +120,10 @@ def test_successful_file_is_chunked_embedded_and_written(tmp_path: Path) -> None
     )
     pipeline, index = _pipeline(parser)
     plan = _plan(tmp_path)
-    outcome = pipeline.process_file(_meta(), plan)
+    prepared = pipeline.prepare_file(_meta(), plan)
+    assert isinstance(prepared, PreparedFile) and len(prepared.children) == 2 and len(prepared.parents) == 1
+    assert index.count() == 0  # фаза 1 в индекс не пишет
+    outcome = pipeline.index_prepared(prepared)
     assert outcome.indexed and outcome.route == "native" and outcome.chunks == 2 and outcome.parents == 1
     assert parser.calls == [(plan.file.path, "native")]
     assert index.count_file(plan.file.row_id) == 2 and index.count_file(plan.file.row_id, parents=True) == 1
