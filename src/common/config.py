@@ -177,6 +177,7 @@ class ChunkingSettings(StrictModel):
     overlap_tokens: int = Field(ge=0, description="Перекрытие чанков фоллбэка")
     min_tokens: int = Field(ge=0, description="Короче этого — чанк склеивается с соседом")
     breadcrumb_separator: str = Field(description="Разделитель хлебных крошек в тексте чанка")
+    section_title_max_words: int = Field(gt=0, description="Короткий нумерованный абзац = заголовок раздела")
 
     @model_validator(mode="after")
     def _overlap_below_size(self) -> ChunkingSettings:

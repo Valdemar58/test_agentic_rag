@@ -150,6 +150,9 @@ ingest:
     overlap_tokens: 64
     min_tokens: 24
     breadcrumb_separator: " → "
+    # Нумерованный абзац из одного числа («1. Утверждение») не длиннее стольких слов — заголовок раздела,
+    # длиннее — обычный пункт («1. Утвердить Положение…» в приказах со сквозной нумерацией).
+    section_title_max_words: 8
   # Parent-child: индексируется уровень пункта/абзаца, агенту возвращается родительский раздел.
   parent_level: section
   tables_as_separate_chunks: true
