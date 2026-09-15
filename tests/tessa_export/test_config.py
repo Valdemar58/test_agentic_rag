@@ -38,7 +38,10 @@ def test_example_config_is_valid() -> None:
     assert config.traversal.max_depth == 2
     assert config.traversal.max_docs == 400  # первый запуск с запасом, затем ручной отбор
     assert config.traversal.directions == ["outgoing", "incoming"]
-    assert config.exclude_rules == []
+    # решение заказчика 2026-09-15 (сценарий B): бухгалтерские типы карточек исключены, seed защищён
+    excluded_types = {name for rule in config.exclude_rules for name in rule.card_type_names}
+    assert excluded_types == {"PrimaryDocumentMKC", "IncomingEDO", "ActReconciliationMKC"}
+    assert all(rule.applies_to_seed is False for rule in config.exclude_rules)
     assert "pdf" in config.files.allowed_extensions
     assert "doc" not in config.files.allowed_extensions
     # у заказчика нет CA сервера Тессы: проверка сертификата выключена и в примере, и по умолчанию

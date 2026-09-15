@@ -39,7 +39,13 @@ traversal:
 #   - reason: "по полю"
 #     field: DocumentCommonInfo.StatusID
 #     values: ["00000000-0000-0000-0000-000000000000"]
-exclude_rules: []
+# Решение заказчика 2026-09-15 (сценарий B по разбору полной выгрузки): бухгалтерские документы,
+# приходящие из договоров, в корпус не входят. Seed-карточки этих типов остаются (защита seed).
+exclude_rules:
+  - reason: "первичные документы и пакеты ЭДО (счета, УПД, акты об оказании услуг, ведомости)"
+    card_type_names: [PrimaryDocumentMKC, IncomingEDO]
+  - reason: "акты сверки взаиморасчётов"
+    card_type_names: [ActReconciliationMKC]
 
 files:
   allowed_extensions: [pdf, docx, xlsx, pptx, png, jpg, jpeg, tif, tiff, bmp, gif]
