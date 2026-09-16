@@ -25,7 +25,7 @@ def upgrade() -> None:
         sa.Column("id", sa.Uuid(), nullable=False),
         sa.Column("identifier", sa.String(length=200), nullable=False),
         sa.Column("metadata", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.PrimaryKeyConstraint("id", name=op.f("app_user_pkey")),
         sa.UniqueConstraint("identifier", name=op.f("uq_app_user_identifier")),
     )
@@ -42,7 +42,7 @@ def upgrade() -> None:
         sa.Column("files_unchanged", sa.Integer(), nullable=False),
         sa.Column("chunks_total", sa.Integer(), nullable=False),
         sa.Column("error_text", sa.Text(), nullable=True),
-        sa.Column("started_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column("started_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("finished_at", sa.DateTime(timezone=True), nullable=True),
         sa.PrimaryKeyConstraint("id", name=op.f("ingest_run_pkey")),
     )
@@ -54,8 +54,8 @@ def upgrade() -> None:
         sa.Column("title", sa.String(length=500), nullable=True),
         sa.Column("tags", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
         sa.Column("metadata", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.ForeignKeyConstraint(
             ["user_id"], ["app_user.id"], name=op.f("fk_conversation_user_id_app_user"), ondelete="SET NULL"
         ),
@@ -79,7 +79,7 @@ def upgrade() -> None:
         sa.Column("chunk_count", sa.Integer(), nullable=False),
         sa.Column("doc_status", sa.String(length=20), nullable=True),
         sa.Column("last_run_id", sa.Integer(), nullable=True),
-        sa.Column("indexed_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column("indexed_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.ForeignKeyConstraint(
             ["last_run_id"],
             ["ingest_run.id"],
@@ -107,7 +107,7 @@ def upgrade() -> None:
         sa.Column("language", sa.String(length=50), nullable=True),
         sa.Column("trace_id", sa.String(length=100), nullable=True),
         sa.Column("metadata", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("started_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("finished_at", sa.DateTime(timezone=True), nullable=True),
         sa.ForeignKeyConstraint(
@@ -142,7 +142,7 @@ def upgrade() -> None:
         sa.Column("page", sa.Integer(), nullable=True),
         sa.Column("chainlit_key", sa.String(length=200), nullable=True),
         sa.Column("props", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.ForeignKeyConstraint(
             ["conversation_id"],
             ["conversation.id"],
@@ -164,8 +164,8 @@ def upgrade() -> None:
         sa.Column("value", sa.Integer(), nullable=False),
         sa.Column("comment", sa.Text(), nullable=True),
         sa.Column("trace_id", sa.String(length=100), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.ForeignKeyConstraint(
             ["conversation_id"],
             ["conversation.id"],
