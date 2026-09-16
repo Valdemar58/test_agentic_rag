@@ -8,7 +8,9 @@ DOCX со структурой заголовков, нумерованными 
 from __future__ import annotations
 
 import io
+import re
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from docx import Document
 from fpdf import FPDF
@@ -17,6 +19,7 @@ from openpyxl import Workbook
 from PIL import Image, ImageDraw, ImageFont
 
 from common.config import ROOT
+from tessa_export.sample_files import deterministic_zip
 
 FONT_PATH = ROOT / "assets" / "fonts" / "DejaVuSans.ttf"
 FONT_FAMILY = "DejaVu"
@@ -30,6 +33,16 @@ PDF_HEADING_SIZE = 12
 PDF_BODY_SIZE = 10
 PDF_LINE_HEIGHT = 6
 TABLE_CELL_SEPARATOR = " | "
+# Даты в свойствах xlsx фиксированы: иначе openpyxl пишет «сейчас» (modified — прямо при сохранении),
+# и одинаковые файлы различаются байтами и sha256
+FIXED_DOCUMENT_TIME = datetime(2026, 1, 1, tzinfo=UTC)
+CORE_PROPERTIES_PART = "docProps/core.xml"
+_MODIFIED_RE = re.compile(rb"(<dcterms:modified[^>]*>)[^<]*(</dcterms:modified>)")
+
+
+def _fix_modified(core_xml: bytes) -> bytes:
+    stamp = FIXED_DOCUMENT_TIME.strftime("%Y-%m-%dT%H:%M:%SZ").encode()
+    return _MODIFIED_RE.sub(lambda match: match.group(1) + stamp + match.group(2), core_xml)
 
 
 @dataclass(frozen=True)
@@ -82,7 +95,7 @@ def docx_bytes(text: DocumentText) -> bytes:
                             run.bold = True
     buffer = io.BytesIO()
     document.save(buffer)
-    return buffer.getvalue()
+    return deterministic_zip(buffer.getvalue())
 
 
 def pdf_bytes(text: DocumentText) -> bytes:
@@ -178,6 +191,7 @@ def xlsx_bytes(sheet_title: str, rows: tuple[tuple[str, ...], ...]) -> bytes:
     sheet.title = sheet_title[:31]
     for row in rows:
         sheet.append(list(row))
+    workbook.properties.created = FIXED_DOCUMENT_TIME
     buffer = io.BytesIO()
     workbook.save(buffer)
-    return buffer.getvalue()
+    return deterministic_zip(buffer.getvalue(), part_edits={CORE_PROPERTIES_PART: _fix_modified})

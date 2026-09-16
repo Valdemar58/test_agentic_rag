@@ -138,7 +138,11 @@ def test_up_runtime_with_observability_adds_profile_and_base_has_none() -> None:
     stack.up("runtime", observability=True)
     up_call = runner.calls[-1]
     profiles = [up_call[i + 1] for i, item in enumerate(up_call) if item == "--profile"]
-    assert profiles == ["runtime", "observability"]
+    # мок сервиса карточек поднимается вместе с runtime, если не отключён
+    assert profiles == ["runtime", "mock", "observability"]
+    stack.up("runtime", mock=False)
+    up_call = runner.calls[-1]
+    assert [up_call[i + 1] for i, item in enumerate(up_call) if item == "--profile"] == ["runtime"]
     stack.up("base")
     assert "--profile" not in runner.calls[-1]
     with pytest.raises(StackError, match="неизвестная цель"):
@@ -151,6 +155,6 @@ def test_down_covers_all_profiles_and_volumes_flag() -> None:
     stack = Stack(config, runner=runner, gpu_total_mib=RTX_5080_MIB)
     stack.down(volumes=True)
     call = runner.calls[-1]
-    assert call.count("--profile") == 3 and call[-1] == "--volumes"
+    assert call.count("--profile") == 4 and call[-1] == "--volumes"
     with pytest.raises(StackError, match="docker compose"):
         Stack(config, runner=FailingRunner(), gpu_total_mib=RTX_5080_MIB).down()

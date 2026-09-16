@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import io
 import zipfile
+from collections.abc import Callable
 
 from docx import Document
 from PIL import Image
@@ -14,6 +15,33 @@ WML_MAIN_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordproce
 CONTENT_TYPES_PART = "[Content_Types].xml"
 DOCUMENT_RELS_PART = "word/_rels/document.xml.rels"
 DOCUMENT_PART = "word/document.xml"
+# Время записей zip фиксировано: zip хранит mtime с шагом 2 с, и одинаковые docx, собранные в разные
+# секунды, иначе различались бы байтами и sha256 (тесты инкрементальности плавали из-за этого)
+FIXED_ZIP_TIME = (2026, 1, 1, 0, 0, 0)
+FILE_MODE_REGULAR = 0o644 << 16
+
+
+def _fixed_info(name: str) -> zipfile.ZipInfo:
+    info = zipfile.ZipInfo(name, date_time=FIXED_ZIP_TIME)
+    info.compress_type = zipfile.ZIP_DEFLATED
+    info.external_attr = FILE_MODE_REGULAR
+    return info
+
+
+def deterministic_zip(data: bytes, part_edits: dict[str, Callable[[bytes], bytes]] | None = None) -> bytes:
+    """Перепаковывает zip (docx, xlsx) с фиксированным временем записей: байты воспроизводимы.
+
+    `part_edits` — правки отдельных частей по имени (например, дата изменения в docProps/core.xml)."""
+    buffer = io.BytesIO()
+    with (
+        zipfile.ZipFile(io.BytesIO(data)) as source,
+        zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as target,
+    ):
+        for info in source.infolist():
+            blob = source.read(info.filename)
+            edit = (part_edits or {}).get(info.filename)
+            target.writestr(_fixed_info(info.filename), edit(blob) if edit else blob)
+    return buffer.getvalue()
 
 
 def minimal_pdf_bytes(text: str | None) -> bytes:
@@ -65,7 +93,7 @@ def minimal_docx_bytes(
         table.cell(1, 1).text = "1"
     buffer = io.BytesIO()
     document.save(buffer)
-    return buffer.getvalue()
+    return deterministic_zip(buffer.getvalue())
 
 
 def _rewrite_docx(data: bytes, edits: dict[str, bytes], extra: dict[str, bytes]) -> bytes:
@@ -76,9 +104,9 @@ def _rewrite_docx(data: bytes, edits: dict[str, bytes], extra: dict[str, bytes])
         zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as target,
     ):
         for info in source.infolist():
-            target.writestr(info.filename, edits.get(info.filename, source.read(info.filename)))
+            target.writestr(_fixed_info(info.filename), edits.get(info.filename, source.read(info.filename)))
         for name, blob in extra.items():
-            target.writestr(name, blob)
+            target.writestr(_fixed_info(name), blob)
     return buffer.getvalue()
 
 

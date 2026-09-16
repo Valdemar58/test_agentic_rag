@@ -29,9 +29,10 @@ from common.config import ROOT, AppConfig
 RUNTIME = "runtime"
 INGEST = "ingest"
 OBSERVABILITY = "observability"
+MOCK = "mock"
 BASE = "base"
 GPU_SERVICE: dict[str, str] = {RUNTIME: "vllm-qwen", INGEST: "vllm-dots"}
-ALL_PROFILES: tuple[str, ...] = (RUNTIME, INGEST, OBSERVABILITY)
+ALL_PROFILES: tuple[str, ...] = (RUNTIME, INGEST, OBSERVABILITY, MOCK)
 UP_TARGETS: tuple[str, ...] = (BASE, RUNTIME, INGEST)
 COMPOSE_FILE = ROOT / "docker-compose.yml"
 MODELS_MOUNT = "/models"
@@ -206,9 +207,18 @@ class Stack:
         return parse_running_services(result.stdout)
 
     def up(
-        self, target: str, *, observability: bool = False, switch: bool = False, wait: bool = False
+        self,
+        target: str,
+        *,
+        observability: bool = False,
+        switch: bool = False,
+        wait: bool = False,
+        mock: bool = True,
     ) -> None:
-        """Поднять базу и профиль `target`; соперничающий GPU-профиль — ошибка или остановка при switch."""
+        """Поднять базу и профиль `target`; соперничающий GPU-профиль — ошибка или остановка при switch.
+
+        С `runtime` по умолчанию поднимается и мок сервиса карточек (профиль `mock`); на стенде
+        с реальным сервисом карточек — `mock=False`."""
         if target not in UP_TARGETS:
             raise StackError(f"неизвестная цель {target!r}; допустимо: {', '.join(UP_TARGETS)}")
         conflict = conflicting_service(target, self.running_services())
@@ -220,6 +230,8 @@ class Stack:
                 )
             self.stop_service(conflict)
         profiles: list[str] = [] if target == BASE else [target]
+        if target == RUNTIME and mock:
+            profiles.append(MOCK)
         if observability:
             profiles.append(OBSERVABILITY)
         args = ["up", "-d", "--remove-orphans"]

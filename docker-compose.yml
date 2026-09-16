@@ -8,7 +8,10 @@
 #   runtime        vllm-qwen: Qwen3-8B AWQ, OpenAI-совместимый endpoint с tool calling
 #   ingest         vllm-dots: dots.mocr для сканов; взаимоисключён с runtime (бюджет VRAM)
 #   observability  Langfuse (web, worker, свой postgres, clickhouse, redis, minio); по умолчанию выключен
-# Сервисы приложения (mock-card-service, mcp-server, agent-ui) добавляются на этапах 5 и 7.
+#   runtime        также mcp-server (инструменты агента: bge-m3 и reranker на CPU)
+#   mock           mock-card-service: мок сервиса карточек на архиве экспорта (dev; stack.py включает
+#                  его вместе с runtime, --no-mock — для стенда с реальным сервисом карточек)
+# agent-ui добавляется на этапе 7.
 # Лимиты памяти контейнеров рассчитаны на VM Docker Desktop 16 ГиБ (решение заказчика 2026-09-14).
 # Внешних вызовов нет: телеметрия vLLM, Qdrant и Langfuse выключена, Hugging Face — офлайн (NFR-5).
 
@@ -47,6 +50,14 @@ x-vllm: &vllm
     timeout: 10s
     retries: 8
     start_period: 600s
+
+x-app: &app
+  # Образ приложения (docker/Dockerfile.app): MCP-сервер и мок; внешний код — томами
+  build:
+    context: .
+    dockerfile: docker/Dockerfile.app
+  image: agentic-rag-app:dev
+  restart: unless-stopped
 
 x-langfuse-env: &langfuse-env
   NEXTAUTH_URL: ${LANGFUSE_URL:-http://localhost:3000}
@@ -156,6 +167,70 @@ services:
       - ${VLLM_QWEN_TOOL_CALL_PARSER:?переменные задаёт scripts/stack.py}
       - --reasoning-parser
       - ${VLLM_QWEN_REASONING_PARSER:?переменные задаёт scripts/stack.py}
+
+  mcp-server:
+    <<: *app
+    profiles: [runtime]
+    command: ["python", "-m", "mcp_server"]
+    depends_on:
+      qdrant:
+        condition: service_healthy
+    environment:
+      QDRANT_URL: http://qdrant:6333
+      # Внутри сети compose мок доступен по имени сервиса; для реального сервиса карточек задайте
+      # CARD_SERVICE_URL_DOCKER (адрес, видимый из контейнера) и учётку Тессы.
+      CARD_SERVICE_URL: ${CARD_SERVICE_URL_DOCKER:-http://mock-card-service:8010}
+      CARD_SERVICE_USERNAME: ${CARD_SERVICE_USERNAME:-}
+      CARD_SERVICE_PASSWORD: ${CARD_SERVICE_PASSWORD:-}
+    ports:
+      - "127.0.0.1:${MCP_PORT:-8020}:8020"
+    volumes:
+      - ${MODELS_DIR:-./models}:/app/models:ro
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8020/health', timeout=5)"
+      interval: 15s
+      timeout: 10s
+      retries: 12
+      # прогрев bge-m3 и reranker'а на CPU
+      start_period: 180s
+    deploy:
+      resources:
+        limits:
+          memory: ${MCP_MEMORY_LIMIT:-6g}
+
+  # ---------- профиль mock: сервис карточек на архиве экспорта ----------
+  mock-card-service:
+    <<: *app
+    profiles: [mock]
+    command: ["python", "-m", "mocks.card_service", "--corpus", "/data/corpus"]
+    environment:
+      TESSA_SDK_PATH: /external/tessa_sdk
+      CARD_SERVICE_PATH: /external/robot_skills
+    ports:
+      - "127.0.0.1:${MOCK_CARD_SERVICE_PORT:-8010}:8010"
+    volumes:
+      # Внешний код только томами (§8.0): пути из .env
+      - ${TESSA_SDK_PATH:-./external/tessa_sdk}:/external/tessa_sdk:ro
+      - ${CARD_SERVICE_PATH:-./external/robot_skills}:/external/robot_skills:ro
+      - ${CORPUS_DIR:-./data/corpus}:/data/corpus:ro
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8010/health', timeout=5)"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: ${MOCK_MEMORY_LIMIT:-1g}
 
   # ---------- профиль ingest ----------
   vllm-dots:

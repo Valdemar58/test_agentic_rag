@@ -1,6 +1,7 @@
 """Управление стендом: docker compose с бюджетом GPU и взаимоисключением профилей.
 
-  uv run python scripts/stack.py up runtime [--observability] [--wait]   Qwen3-8B + база
+  uv run python scripts/stack.py up runtime [--observability] [--wait] [--no-mock]
+                                                                         Qwen3-8B + MCP + мок карточек + база
   uv run python scripts/stack.py up ingest [--switch] [--wait]           dots.mocr + база
   uv run python scripts/stack.py up base                                 только qdrant и postgres
   uv run python scripts/stack.py down [--volumes]                        остановить всё
@@ -40,6 +41,9 @@ def build_parser() -> argparse.ArgumentParser:
     up.add_argument("--observability", action="store_true", help="дополнительно поднять Langfuse")
     up.add_argument("--switch", action="store_true", help="остановить соперничающий GPU-профиль")
     up.add_argument("--wait", action="store_true", help="ждать healthy всех сервисов")
+    up.add_argument(
+        "--no-mock", action="store_true", help="runtime без мока сервиса карточек (реальный сервис)"
+    )
 
     down = subparsers.add_parser("down", help="остановить все профили")
     down.add_argument("--volumes", action="store_true", help="удалить и данные (Qdrant, PostgreSQL)")
@@ -65,8 +69,17 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"{key}={value}")
             return EXIT_OK
         if args.command == "up":
-            stack.up(args.target, observability=args.observability, switch=args.switch, wait=args.wait)
-            print(f"Стенд поднят: {args.target}" + (" + observability" if args.observability else ""))
+            stack.up(
+                args.target,
+                observability=args.observability,
+                switch=args.switch,
+                wait=args.wait,
+                mock=not args.no_mock,
+            )
+            extras = (" + mock" if args.target == "runtime" and not args.no_mock else "") + (
+                " + observability" if args.observability else ""
+            )
+            print(f"Стенд поднят: {args.target}{extras}")
             return EXIT_OK
         if args.command == "down":
             if args.volumes:
