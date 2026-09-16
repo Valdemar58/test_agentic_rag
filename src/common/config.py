@@ -153,6 +153,9 @@ class RerankerSettings(StrictModel):
     device: Device = Field(description="Устройство reranker'а (§2: CPU в рантайме)")
     max_length: int = Field(gt=0, description="Максимум токенов пары запрос+чанк")
     batch_size: int = Field(gt=0)
+    quantize_int8: bool = Field(
+        description="Динамическое int8-квантование Linear-слоёв на CPU (N17: ~2× быстрее, оценки почти те же)"
+    )
 
 
 class QdrantSettings(StrictModel):
@@ -280,7 +283,10 @@ class RetrievalSettings(StrictModel):
     top_k: int = Field(gt=0, description="Результатов агенту по умолчанию")
     max_top_k: int = Field(gt=0, description="Верхняя граница top_k в запросе инструмента")
     default_statuses: list[DocStatus] = Field(min_length=1, description="Фильтр статуса по умолчанию")
-    return_parent: bool = Field(description="Возвращать родительский раздел вместо child-чанка")
+    return_parent: bool = Field(description="Возвращать родительский раздел вместе с child-чанком")
+    known_values_limit: int = Field(
+        gt=0, description="Сколько различных значений вида документа и подразделения читать из индекса"
+    )
 
     @model_validator(mode="after")
     def _limits_are_nested(self) -> RetrievalSettings:

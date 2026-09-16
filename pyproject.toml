@@ -105,6 +105,7 @@ known-first-party = [
     "synthetic",
     "tessa_export",
     "mocks",
+    "tests",
 ]
 
 [tool.mypy]
