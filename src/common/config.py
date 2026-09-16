@@ -321,6 +321,13 @@ class McpSettings(StrictModel):
     path: str = Field(pattern=r"^/", description="Путь streamable-http endpoint")
 
 
+class CardServiceSettings(StrictModel):
+    """Клиент сервиса карточек (FR-2.2, FR-2.4): один URL из окружения, параметры здесь."""
+
+    timeout_s: float = Field(gt=0, description="Тайм-аут запроса к сервису карточек")
+    cache_size: int = Field(ge=0, description="Кэш карточек в памяти (для типа входящих связей, N7)")
+
+
 class MockCardServiceSettings(StrictModel):
     """Мок сервиса карточек в dev (§9 ТЗ): те же маршруты и схемы, данные из архива экспорта."""
 
@@ -379,6 +386,7 @@ class AppConfig(StrictModel):
     retrieval: RetrievalSettings
     agent: AgentSettings
     mcp: McpSettings
+    card_service: CardServiceSettings
     mock_card_service: MockCardServiceSettings
     ui: UiSettings
     langfuse: LangfuseSettings
