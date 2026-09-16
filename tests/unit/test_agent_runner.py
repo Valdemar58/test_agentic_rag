@@ -15,11 +15,12 @@ from uuid import UUID
 import httpx
 import pytest
 import respx
+from openai import APIStatusError
 
 from agent.evidence import EvidenceRegistry
 from agent.memory import Turn
 from agent.prompts import BUDGET_CAVEAT, NO_ANSWER_PHRASE
-from agent.rendering import TOOL_CARD, TOOL_CONTENT, TOOL_RELATED, TOOL_SEARCH
+from agent.rendering import CUT_MARK, TOOL_CARD, TOOL_CONTENT, TOOL_RELATED, TOOL_SEARCH
 from agent.runner import (
     AgentRunner,
     AgentSession,
@@ -29,7 +30,7 @@ from agent.runner import (
     ToolFinished,
     ToolStarted,
 )
-from agent.tools import BUDGET_EXHAUSTED, AgentTools
+from agent.tools import BUDGET_EXHAUSTED, CONTEXT_EXHAUSTED, CONTEXT_TIGHT, AgentTools
 from agent.tracing import Tracing
 from common.config import DEFAULT_CONFIG_PATH, AppConfig, LlmRole, load_app_config
 from mcp_server.cards import CardServiceClient
@@ -429,6 +430,48 @@ async def test_repeated_calls_and_relation_type_filter_do_not_spend_budget(harne
         text for text in _tool_messages(harness.llms["tool_loop"]) if text.startswith("Этот вызов уже")
     ]
     assert len(repeats) == 2 and "Связи документа [D1]" in repeats[0] and "Найдено фрагментов" in repeats[1]
+
+
+async def test_context_guard_cuts_results_and_stops_tool_calls(harness: Harness) -> None:
+    """Контекст цикла ограничен: результаты сверх остатка обрезаются, дальше инструменты не вызываются."""
+    # результат первого поиска на синтетическом корпусе ≈ 800 символов: лимит меньше, чтобы он был обрезан
+    limits = CONFIG.agent.tool_output.model_copy(
+        update={"loop_context_chars": 500, "context_reserve_chars": 200}
+    )
+    config = CONFIG.model_copy(update={"agent": CONFIG.agent.model_copy(update={"tool_output": limits})})
+    runner = harness.runner(
+        [
+            tool_step(TOOL_SEARCH, query=QUERY),
+            tool_step(TOOL_SEARCH, query="контроль оставляю за собой"),
+            tool_step(TOOL_CONTENT, doc_id="D1"),
+            "Заметки: контекст кончился.",
+        ],
+        ["Отчёт сдаётся до пятого числа [S1]."],
+        config=config,
+    )
+    answer = await runner.ask("Когда сдаётся отчёт?", harness.session(config))
+    assert [call.name for call in answer.tool_calls] == [TOOL_SEARCH], "второй и третий вызовы не выполнены"
+    assert answer.context_exhausted and not answer.budget_exhausted and BUDGET_CAVEAT in answer.text
+    texts = _tool_messages(harness.llms["tool_loop"])
+    assert texts[0].endswith(CONTEXT_TIGHT)
+    assert len(texts[0]) <= 500 + len(CUT_MARK) + 1 + len(CONTEXT_TIGHT)
+    assert texts[1] == CONTEXT_EXHAUSTED
+
+
+async def test_model_error_in_loop_does_not_lose_the_answer(harness: Harness) -> None:
+    """vLLM отклонил запрос (например, переполнен контекст) — ответ строится по уже собранному."""
+    request = httpx.Request("POST", "http://vllm.test/v1/chat/completions")
+    error = APIStatusError(
+        "maximum context length exceeded", response=httpx.Response(400, request=request), body=None
+    )
+    runner = harness.runner(
+        [tool_step(TOOL_SEARCH, query=QUERY), error, "не должно понадобиться"],
+        ["Отчёт сдаётся до пятого числа [S1]."],
+    )
+    answer = await runner.ask("Когда сдаётся отчёт?", harness.session())
+    assert answer.notes and "прерван ошибкой модели" in answer.notes
+    assert answer.context_exhausted and BUDGET_CAVEAT in answer.text
+    assert answer.sources and answer.sources[0].alias == "S1", "свидетельства первого поиска сохранены"
 
 
 def test_without_tracing_answer_has_no_trace_id() -> None:

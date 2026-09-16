@@ -146,7 +146,9 @@ disallow_untyped_decorators = false
 testpaths = ["tests"]
 # корень — для пакета mocks (он не устанавливается в окружение, в отличие от src)
 pythonpath = ["."]
-addopts = "--import-mode=importlib -ra"
+# Живые сценарии агента (маркер scenario) по умолчанию исключены: ~10 минут на живом vLLM;
+# запуск — uv run pytest -m scenario
+addopts = "--import-mode=importlib -ra -m 'not scenario'"
 asyncio_mode = "auto"
 filterwarnings = [
     # FunctionAgent LlamaIndex обходит атрибуты LLM через inspect.getmembers и трогает устаревшие поля pydantic
@@ -159,4 +161,5 @@ markers = [
     "integration: тесты, требующие поднятого стенда (docker compose)",
     "gpu: тесты, требующие GPU и vLLM",
     "e2e: сквозные сценарии",
+    "scenario: живые сценарии агента на стенде (AC-1.1, AC-1.2, AC-2.1, AC-6.1); исключены из прогона по умолчанию",
 ]

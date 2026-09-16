@@ -17,8 +17,9 @@ from typing import Any, Literal, Protocol
 from llama_index.core.agent.workflow import AgentOutput, FunctionAgent, ToolCall, ToolCallResult
 from llama_index.core.llms import LLM, ChatMessage
 from llama_index.core.memory import ChatMemoryBuffer
+from openai import APIStatusError
 from pydantic import BaseModel, Field
-from workflows.errors import WorkflowTimeoutError
+from workflows.errors import WorkflowRuntimeError, WorkflowTimeoutError
 
 from agent.citations import Source, cite_answer
 from agent.evidence import EvidenceRegistry, ToolCallRecord
@@ -69,6 +70,7 @@ class QueryRewritten(AgentEvent):
     kind: Literal["query_rewritten"] = "query_rewritten"
     question: str
     query: str = Field(description="Самодостаточный поисковый запрос (FR-6)")
+    queries: list[str] = Field(description="Отдельные запросы для многочастного вопроса (AC-1.1)")
     changed: bool
     needs_search: bool
     relevant_documents: list[str]
@@ -119,7 +121,8 @@ class Answer(BaseModel):
     sources: list[Source] = Field(description="Источники по номерам ссылок: чанк индекса или карточка")
     unresolved_markers: list[str] = Field(description="Ссылки модели, не найденные в реестре (удалены)")
     refused: bool = Field(description="Ответ начинается с явного отказа «В документах ответа нет»")
-    budget_exhausted: bool
+    budget_exhausted: bool = Field(description="Бюджет вызовов инструментов исчерпан (FR-1)")
+    context_exhausted: bool = Field(description="Контекст цикла для результатов инструментов исчерпан")
     rewritten_query: str | None = Field(description="Переписанный запрос, если отличался от вопроса")
     needs_search: bool = Field(description="False — ответ без инструментов (приветствие и т.п.)")
     notes: str | None
@@ -178,6 +181,11 @@ class AgentRunner:
     def tracing(self) -> Tracing:
         return self._tracing
 
+    async def aclose(self) -> None:
+        """Закрывает соединение с MCP и сбрасывает трейсы."""
+        await self._tools.aclose()
+        self._tracing.flush()
+
     async def ask(self, question: str, session: AgentSession) -> Answer:
         """Вопрос → ответ без промежуточных событий (CLI, eval, тесты)."""
         answer: Answer | None = None
@@ -209,6 +217,7 @@ class AgentRunner:
         yield QueryRewritten(
             question=question,
             query=rewritten.query,
+            queries=rewritten.queries,
             changed=rewritten.changed,
             needs_search=rewritten.needs_search,
             relevant_documents=rewritten.relevant_documents,
@@ -222,14 +231,14 @@ class AgentRunner:
         )
         notes = ""
         if rewritten.needs_search:
-            user_message = loop_user_message(question, rewritten.query)
+            user_message = loop_user_message(question, rewritten.query, rewritten.queries)
             if rewritten.relevant_documents and agent_settings.cached_evidence_chars:
                 cached, fragments, documents = render_cached_evidence(
                     session.registry, rewritten.relevant_documents, agent_settings.cached_evidence_chars
                 )
                 if fragments:
                     run.note_aliases(fragments, documents)
-                    user_message = with_cached_evidence(user_message, cached)
+                    user_message = with_cached_evidence(user_message, run.consume_context(cached))
                     yield CacheUsed(document_aliases=documents, fragment_aliases=fragments)
             with self._tracing.step("tool_loop", kind="agent", input=user_message) as step:
                 async for event in self._tool_loop(user_message, run):
@@ -272,7 +281,7 @@ class AgentRunner:
                 },
             )
         body = cited.body
-        if run.budget_exhausted and BUDGET_CAVEAT not in body:
+        if run.exhausted and BUDGET_CAVEAT not in body:
             body = f"{body}\n\n{BUDGET_CAVEAT}".strip()
         text = f"{body}\n\n{cited.sources_block}" if cited.sources else body
         session.registry.trim()
@@ -293,6 +302,7 @@ class AgentRunner:
             unresolved_markers=cited.unresolved,
             refused=rewritten.needs_search and text.startswith(NO_ANSWER_PHRASE),
             budget_exhausted=run.budget_exhausted,
+            context_exhausted=run.context_exhausted,
             rewritten_query=rewritten.query if rewritten.changed else None,
             needs_search=rewritten.needs_search,
             notes=notes or None,
@@ -392,6 +402,11 @@ class AgentRunner:
         except WorkflowTimeoutError:
             logger.warning("Цикл инструментов прерван по времени (%s с)", agent_settings.loop_timeout_s)
             notes = notes or "Цикл поиска прерван по времени; отвечаю по уже найденному."
+        except (APIStatusError, WorkflowRuntimeError) as exc:
+            # модель отклонила запрос (например, переполнен контекст) — отвечаем по собранному
+            logger.error("Цикл инструментов прерван ошибкой модели: %s", exc)
+            run.context_exhausted = True
+            notes = notes or "Цикл поиска прерван ошибкой модели; отвечаю по уже найденному."
         yield LoopNotes(text=notes)
 
     # ---------- итоговый ответ ----------

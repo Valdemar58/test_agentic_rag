@@ -41,6 +41,8 @@ async def _ask(runner: AgentRunner, session: AgentSession, question: str) -> Non
         if isinstance(event, QueryRewritten):
             if event.changed:
                 print(f"≈ Запрос с учётом диалога: {event.query}", flush=True)
+            for index, query in enumerate(event.queries, start=1):
+                print(f"   {index}. {query}", flush=True)
             if not event.needs_search:
                 print("· Поиск по документам не нужен", flush=True)
         elif isinstance(event, CacheUsed):
@@ -66,6 +68,7 @@ async def _ask(runner: AgentRunner, session: AgentSession, question: str) -> Non
                 f"\n[{answer.seconds:.1f} с: поиск {answer.loop_seconds:.1f} с, "
                 f"ответ {answer.answer_seconds:.1f} с; вызовов инструментов {len(answer.tool_calls)}"
                 + ("; бюджет исчерпан" if answer.budget_exhausted else "")
+                + ("; контекст исчерпан" if answer.context_exhausted else "")
                 + ("; отказ" if answer.refused else "")
                 + (f"; трейс {answer.trace_id}" if answer.trace_id else "")
                 + "]",
@@ -102,7 +105,7 @@ async def _main(args: argparse.Namespace) -> int:
             await _ask(runner, session, question)
         return EXIT_OK
     finally:
-        runner.tracing.flush()
+        await runner.aclose()
 
 
 def main(argv: list[str] | None = None) -> int:

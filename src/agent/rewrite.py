@@ -28,11 +28,16 @@ logger = logging.getLogger(__name__)
 
 JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
 FALLBACK_REASON = "ответ модели не разобран, поиск по исходному вопросу"
+# больше отдельных запросов не имеет смысла при бюджете в 8 вызовов (FR-1)
+MAX_QUERIES = 4
 
 
 class RewrittenQuery(BaseModel):
     question: str
     query: str = Field(description="Самодостаточный поисковый запрос")
+    queries: list[str] = Field(
+        default_factory=list, description="Отдельные поисковые запросы для многочастного вопроса (AC-1.1)"
+    )
     needs_search: bool = True
     relevant_documents: list[str] = Field(default_factory=list, description="Псевдонимы документов сессии")
     abbreviations: list[str] = Field(default_factory=list, description="Аббревиатуры для глоссария")
@@ -65,9 +70,11 @@ def parse_rewrite(question: str, text: str, thinking: str | None = None) -> Rewr
             for item in _strings(data.get("relevant_documents"))
             if ALIAS_RE.match(item) and item.startswith(DOC_PREFIX)
         ]
+        queries = _strings(data.get("queries"))[:MAX_QUERIES]
         return RewrittenQuery(
             question=question,
             query=query,
+            queries=queries if len(queries) >= 2 else [],
             needs_search=bool(data.get("needs_search", True)),
             relevant_documents=documents,
             abbreviations=_strings(data.get("abbreviations")),

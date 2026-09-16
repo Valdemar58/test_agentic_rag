@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from agent.evidence import EvidenceRegistry
 from agent.memory import Turn, render_history
+from agent.prompts import loop_user_message
 from agent.rewrite import FALLBACK_REASON, QueryRewriter, parse_rewrite
 from common.config import DEFAULT_CONFIG_PATH, load_app_config
 from tests.unit.agent_fakes import ScriptedLLM
@@ -21,7 +22,27 @@ def test_parse_takes_json_from_text_and_filters_aliases() -> None:
     result = parse_rewrite(QUESTION, text, thinking="думал")
     assert result.query == "требования к СИЗ для филиалов" and result.changed
     assert result.needs_search and result.relevant_documents == ["D1"] and result.abbreviations == ["СИЗ"]
-    assert result.reason == "уточнение" and result.thinking == "думал"
+    assert result.reason == "уточнение" and result.thinking == "думал" and result.queries == []
+
+
+def test_parse_keeps_several_sub_queries_and_loop_message_lists_them() -> None:
+    text = (
+        '{"query": "инструкции по охране труда: действующие и прежние приказы", '
+        '"queries": ["действующие инструкции по охране труда", "приказы, вводившие инструкции ранее", '
+        '"", "третий", "четвёртый", "пятый"]}'
+    )
+    result = parse_rewrite("Какие инструкции действуют и какими приказами вводились?", text)
+    assert result.queries == [
+        "действующие инструкции по охране труда",
+        "приказы, вводившие инструкции ранее",
+        "третий",
+        "четвёртый",
+    ], "пустые запросы отброшены, больше четырёх не берётся"
+    message = loop_user_message(result.question, result.query, result.queries)
+    assert message.startswith("Вопрос пользователя: Какие инструкции действуют")
+    assert "Отдельные поисковые запросы" in message and "\n2. приказы, вводившие инструкции ранее" in message
+    single = parse_rewrite(QUESTION, '{"query": "один", "queries": ["один"]}')
+    assert single.queries == [] and "Отдельные" not in loop_user_message(QUESTION, "один", single.queries)
 
 
 def test_parse_falls_back_to_the_question() -> None:

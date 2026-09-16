@@ -32,6 +32,11 @@ REPEATED_CALL = (
     "Этот вызов уже выполнялся с теми же аргументами; повторно инструмент не вызван (бюджет не тратится). "
     "Прежний результат:\n{text}"
 )
+CONTEXT_EXHAUSTED = (
+    "Контекст для результатов инструментов исчерпан: вызов не выполнен. "
+    "Заверши работу — напиши заметки для ответа по уже найденному."
+)
+CONTEXT_TIGHT = "(результат сокращён: контекст для результатов инструментов почти исчерпан)"
 RELATION_TYPE_ARGUMENT = "relation_type"
 ERROR_SUMMARY_CHARS = 200
 
@@ -48,6 +53,8 @@ class ToolTransport(Protocol):
     async def list_tools(self) -> list[Tool]: ...
 
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> ToolResultData: ...
+
+    async def aclose(self) -> None: ...
 
 
 def result_data(result: CallToolResult) -> ToolResultData:
@@ -67,6 +74,10 @@ class McpTransport:
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> ToolResultData:
         return result_data(await self._client.call_tool(name, arguments))
 
+    async def aclose(self) -> None:
+        """Закрывает HTTP-клиент MCP до остановки цикла событий (иначе httpx ругается при сборке мусора)."""
+        await self._client.http_client.aclose()
+
 
 @dataclass
 class ToolRun:
@@ -77,6 +88,8 @@ class ToolRun:
     limits: ToolOutputSettings
     calls: list[ToolCallRecord] = field(default_factory=list)
     budget_exhausted: bool = False
+    context_exhausted: bool = False
+    context_chars: int = 0
     fragment_aliases: list[str] = field(default_factory=list)
     document_aliases: list[str] = field(default_factory=list)
     seen: dict[tuple[str, str], str] = field(default_factory=dict, repr=False)
@@ -84,6 +97,22 @@ class ToolRun:
     @property
     def search_queries(self) -> list[str]:
         return [record.query for record in self.calls if record.query]
+
+    @property
+    def exhausted(self) -> bool:
+        """Бюджет вызовов или контекст исчерпаны — ответ может быть неполным (FR-1)."""
+        return self.budget_exhausted or self.context_exhausted
+
+    def remaining_context(self) -> int:
+        return max(0, self.limits.loop_context_chars - self.context_chars)
+
+    def consume_context(self, text: str) -> str:
+        """Учитывает текст в контексте цикла; сверх остатка — обрезает с пометкой."""
+        remaining = self.remaining_context()
+        if len(text) > remaining:
+            text = f"{cut(text, max(remaining, 0))}\n{CONTEXT_TIGHT}"
+        self.context_chars += len(text)
+        return text
 
     def note_aliases(self, fragments: list[str], documents: list[str]) -> None:
         for alias in fragments:
@@ -124,6 +153,9 @@ class AgentTools:
     def names(self) -> list[str]:
         return [tool.name for tool in self._specs]
 
+    async def aclose(self) -> None:
+        await self._transport.aclose()
+
     def bind(self, run: ToolRun) -> list[FunctionTool]:
         if not self._specs:
             raise RuntimeError("инструменты не загружены: вызовите load()")
@@ -143,6 +175,10 @@ class AgentTools:
             run.budget_exhausted = True
             logger.info("Бюджет вызовов (%d) исчерпан, %s не вызван", run.max_calls, name)
             return BUDGET_EXHAUSTED.format(limit=run.max_calls)
+        if run.remaining_context() < run.limits.context_reserve_chars:
+            run.context_exhausted = True
+            logger.info("Контекст цикла исчерпан (%d символов), %s не вызван", run.context_chars, name)
+            return CONTEXT_EXHAUSTED
         arguments = run.registry.resolve_arguments(_clean(kwargs))
         if name == TOOL_RELATED:
             # все связи с типами и так видны в ответе; фильтр по типу только плодил повторные вызовы
@@ -151,7 +187,7 @@ class AgentTools:
         key = _call_key(name, arguments)
         if key in run.seen:
             logger.info("Инструмент %s: повторный вызов с теми же аргументами, отдаю прежний результат", name)
-            return REPEATED_CALL.format(text=run.seen[key])
+            return run.consume_context(REPEATED_CALL.format(text=run.seen[key]))
         query = str(arguments.get("query")) if name == TOOL_SEARCH and arguments.get("query") else None
         started = time.perf_counter()
         try:
@@ -184,7 +220,8 @@ class AgentTools:
             )
             return f"Ошибка инструмента {name}: {text}"
         rendered = render(name, arguments, result.structured, run.registry, run.limits)
-        run.seen[key] = rendered.text
+        text = run.consume_context(rendered.text)
+        run.seen[key] = text
         run.note_aliases(rendered.fragment_aliases, rendered.document_aliases)
         run.calls.append(
             ToolCallRecord(
@@ -198,4 +235,4 @@ class AgentTools:
                 document_aliases=rendered.document_aliases,
             )
         )
-        return rendered.text
+        return text

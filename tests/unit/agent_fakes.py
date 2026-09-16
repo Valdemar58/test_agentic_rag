@@ -22,7 +22,7 @@ from pydantic import Field
 
 from agent.tools import ToolResultData
 
-Step = str | list[ToolSelection]
+Step = str | list[ToolSelection] | Exception
 
 
 def tool_step(name: str, **kwargs: Any) -> list[ToolSelection]:
@@ -49,6 +49,8 @@ class ScriptedLLM(FunctionCallingLLM):
     def _next(self, messages: Sequence[ChatMessage]) -> ChatResponse:
         self.inputs.append(list(messages))
         step: Step = self.steps.pop(0) if self.steps else self.fallback
+        if isinstance(step, Exception):
+            raise step
         if isinstance(step, str):
             message = ChatMessage(role="assistant", content=step)
         else:
@@ -179,3 +181,6 @@ class InMemoryTransport:
             result = await client.call_tool(name, arguments, raise_on_error=False)
         text = "\n".join(getattr(item, "text", "") for item in result.content)
         return ToolResultData(is_error=result.is_error, text=text, structured=result.structured_content)
+
+    async def aclose(self) -> None:
+        return None

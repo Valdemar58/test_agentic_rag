@@ -374,6 +374,16 @@ class ToolOutputSettings(StrictModel):
     card_chars: int = Field(gt=0, description="Секции карточки после сводки")
     section_chars: int = Field(gt=0, description="Один раздел документа")
     content_chars: int = Field(gt=0, description="Все разделы за один вызов get_document_content")
+    loop_context_chars: int = Field(gt=0, description="Суммарный объём результатов инструментов за вопрос")
+    context_reserve_chars: int = Field(
+        ge=0, description="Остаток контекста, меньше которого инструменты уже не вызываются"
+    )
+
+    @model_validator(mode="after")
+    def _reserve_within_context(self) -> ToolOutputSettings:
+        if self.context_reserve_chars >= self.loop_context_chars:
+            raise ValueError("agent.tool_output.context_reserve_chars должен быть меньше loop_context_chars")
+        return self
 
 
 class AnswerSettings(StrictModel):
