@@ -10,6 +10,7 @@ from docling_core.types.doc.labels import DocItemLabel
 
 from common.config import DEFAULT_CONFIG_PATH, load_app_config
 from ingest.chunking import Chunk, StructuralChunker
+from ingest.parents import build_chunk_set
 from ingest.tokens import WordTokenCounter
 
 SETTINGS = load_app_config(DEFAULT_CONFIG_PATH).ingest.chunking
@@ -200,6 +201,116 @@ def test_chunk_ids_are_deterministic_per_file() -> None:
     assert [chunk.chunk_id for chunk in first] == [chunk.chunk_id for chunk in second]
     assert set(chunk.chunk_id for chunk in first).isdisjoint(chunk.chunk_id for chunk in other)
     assert all(isinstance(chunk, Chunk) for chunk in first)
+
+
+def rules_with_appendices() -> DoclingDocument:
+    """Как Docling читает docx правил без стилей заголовков: оглавление с табуляцией, нумерованные разделы
+    списком, «Приложение № N» обычными абзацами, перечень должностей — нумерованный список."""
+    doc = DoclingDocument(name="правила")
+    doc.add_heading("Правила внутреннего распорядка", level=1)
+    doc.add_text(label=DocItemLabel.TEXT, text="6.\tРежим рабочего времени\t14")
+    doc.add_text(label=DocItemLabel.TEXT, text="Приложение № 1\t25")
+    doc.add_text(label=DocItemLabel.TEXT, text="Приложение № 2\t26")
+    group = doc.add_list_group()
+    doc.add_list_item("Заключительные положения", enumerated=True, marker="10.", parent=group)
+    doc.add_list_item(
+        "За нарушение требований работники несут ответственность.",
+        enumerated=True,
+        marker="10.1.",
+        parent=group,
+    )
+    doc.add_list_item(
+        "Правила обязательны для всех работников.", enumerated=True, marker="10.2.", parent=group
+    )
+    doc.add_text(label=DocItemLabel.TEXT, text="Приложение № 1")
+    doc.add_text(
+        label=DocItemLabel.TEXT, text="к Правилам, утверждённым приказом от «___» ______ 202_ г. № ___"
+    )
+    doc.add_text(label=DocItemLabel.TEXT, text="Перечень должностей (профессий) работников Общества,")
+    doc.add_text(label=DocItemLabel.TEXT, text="которым установлен суммированный учет рабочего времени")
+    positions = doc.add_list_group()
+    for index in range(1, 13):
+        doc.add_list_item(
+            f"Оператор установки {index} категории производственного отдела.",
+            enumerated=True,
+            marker=f"{index}.",
+            parent=positions,
+        )
+    doc.add_text(label=DocItemLabel.TEXT, text="Приложение № 2")
+    doc.add_text(
+        label=DocItemLabel.TEXT, text="к Правилам, утверждённым приказом от «___» ______ 202_ г. № ___"
+    )
+    doc.add_text(label=DocItemLabel.TEXT, text="Режим работы в холодное время года на открытой территории")
+    doc.add_table(data=_table([["Температура", "Перерыв"], ["−20", "10 минут"], ["−30", "15 минут"]]))
+    doc.add_text(label=DocItemLabel.TEXT, text="Приложение № 3")
+    doc.add_text(label=DocItemLabel.TEXT, text="Форма расчетного листка")
+    doc.add_text(label=DocItemLabel.TEXT, text="Приложение № 4")
+    doc.add_text(label=DocItemLabel.TEXT, text="Форма заявления на отпуск")
+    doc.add_text(label=DocItemLabel.TEXT, text="Прошу предоставить ежегодный оплачиваемый отпуск.")
+    return doc
+
+
+def test_appendices_become_sections_lists_stay_together_and_toc_is_skipped() -> None:
+    """Реальный корпус (2026-09-16): приложение № 1 лежало внутри раздела 10, каждая должность — свой чанк
+    «п. N», строки оглавления стали ложными заголовками; перечень не находился поиском и не цитировался."""
+    chunks = chunker().chunk(rules_with_appendices(), ROOT, file_sha256=SHA)
+    texts = "\n".join(chunk.text for chunk in chunks)
+    assert "\t" not in texts and "Режим рабочего времени 14" not in texts, "оглавление пропущено"
+    assert not any(crumb.endswith(" 14") for chunk in chunks for crumb in chunk.breadcrumbs)
+    clause = next(chunk for chunk in chunks if chunk.clause == "10.1")
+    assert clause.breadcrumbs == (ROOT[0], "Раздел 10. Заключительные положения", "п. 10.1")
+
+    appendix = [
+        chunk for chunk in chunks if chunk.breadcrumbs[1:2] and "Приложение № 1" in chunk.breadcrumbs[1]
+    ]
+    assert len(appendix) == 1, [chunk.breadcrumbs for chunk in chunks]
+    listing = appendix[0]
+    crumb = listing.breadcrumbs[1]
+    assert crumb.startswith("Приложение № 1. Перечень должностей (профессий) работников Общества")
+    assert crumb.endswith("…") and len(listing.breadcrumbs) == 2 and listing.clause is None
+    assert listing.heading is not None and listing.heading.endswith("суммированный учет рабочего времени")
+    assert listing.body.startswith("к Правилам") and "1. Оператор установки 1" in listing.body
+    assert "12. Оператор установки 12" in listing.body, "весь перечень — один чанк"
+    assert listing.section_key == crumb and not any(chunk.clause in {"1", "12"} for chunk in chunks)
+
+    table = next(chunk for chunk in chunks if chunk.kind == "table")
+    assert table.breadcrumbs == (
+        ROOT[0],
+        "Приложение № 2. Режим работы в холодное время года на открытой территории",
+    )
+    # приложение без текста («Форма…») не съедает заголовок следующего приложения
+    form = next(chunk for chunk in chunks if chunk.body.startswith("Прошу предоставить"))
+    assert form.breadcrumbs == (ROOT[0], "Приложение № 4. Форма заявления на отпуск")
+    assert not any("листка Приложение" in crumb for chunk in chunks for crumb in chunk.breadcrumbs)
+
+    parents = build_chunk_set(chunks, SETTINGS, WordTokenCounter(), file_sha256=SHA).parents
+    parent_crumbs = [parent.breadcrumbs[1] for parent in parents if len(parent.breadcrumbs) > 1]
+    assert crumb in parent_crumbs and "Раздел 10. Заключительные положения" in parent_crumbs
+    section_10 = next(
+        parent for parent in parents if parent.breadcrumbs[1:] == ("Раздел 10. Заключительные положения",)
+    )
+    assert "Оператор" not in section_10.body, "приложение — отдельный parent, а не хвост раздела 10"
+
+
+def test_appendix_paragraph_at_the_start_of_a_file_is_not_a_section() -> None:
+    doc = DoclingDocument(name="вложение")
+    doc.add_heading("Инструкция", level=1)
+    doc.add_text(label=DocItemLabel.TEXT, text="Приложение № 2 к приказу от 20.05.2024 № 150")
+    doc.add_text(label=DocItemLabel.TEXT, text="1.1. Инструкция устанавливает порядок действий.")
+    chunks = chunker().chunk(doc, ROOT, file_sha256=SHA)
+    assert chunks[0].breadcrumbs == ROOT and chunks[0].body.startswith("Приложение № 2 к приказу")
+    long_appendix = DoclingDocument(name="договор")
+    long_appendix.add_heading("Договор", level=1)
+    long_appendix.add_text(label=DocItemLabel.TEXT, text="1.1. Предмет договора описан ниже.")
+    long_appendix.add_text(
+        label=DocItemLabel.TEXT,
+        text="Приложение № 3 к настоящему договору содержит перечень товаров, цены, сроки поставки и "
+        "условия приёмки, согласованные сторонами при подписании.",
+    )
+    chunks = chunker().chunk(long_appendix, ROOT, file_sha256=SHA)
+    assert not any("Приложение" in crumb for chunk in chunks for crumb in chunk.breadcrumbs), (
+        "длинный абзац — текст"
+    )
 
 
 def test_split_fixed_respects_limit_and_overlap_on_plain_text() -> None:

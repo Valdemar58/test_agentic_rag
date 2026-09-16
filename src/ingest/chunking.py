@@ -15,6 +15,12 @@
 и нумерации — фоллбэк: окна `max_tokens` с перекрытием `overlap_tokens` по предложениям.
 Токены считаются токенайзером bge-m3.
 
+Приложения (ручная проверка реального корпуса 2026-09-16: в 17 документах 69 приложений лежали внутри
+последнего раздела): короткий абзац «Приложение № N» не в начале документа вместе с названием из
+следующих коротких абзацев становится заголовком верхнего уровня («Приложение № 1. Перечень должностей…»);
+нумерованный перечень внутри приложения («1. Мастер…», «2. Специалист…») — записи одного чанка, а не
+пункты «п. 1», «п. 2». Строки оглавления (табуляция или отточие и номер страницы) пропускаются.
+
 `section_key` чанка — путь разделов без пункта: по нему собирается parent (задача 4.4).
 """
 
@@ -33,11 +39,18 @@ ChunkKind = Literal["text", "table"]
 Strategy = Literal["structural", "fixed"]
 SECTION_PREFIX = "Раздел"
 CLAUSE_PREFIX = "п."
+APPENDIX_PREFIX = "Приложение"
 ELLIPSIS = "…"
 TABLE_HEADER_LINES = 2
 RECORD_SEPARATOR = ": "
 SKIPPED_LABELS = frozenset({"page_header", "page_footer", "picture"})
 HEADER_LABELS = frozenset({"section_header", "title"})
+# «Приложение № 1», «Приложение 2», «Приложение N 1а», «Приложение № 3. Лист оповещения»
+_APPENDIX_RE = re.compile(r"^\s*Приложение\s*(?:№|N|#)?\s*(\d+[а-яa-z]?)(?=[\s.:;)]|$)", re.IGNORECASE)
+# строка оглавления: заголовок, табуляция или отточие, номер страницы («6.\tРежим…\t14», «Приложение № 1\t25»)
+_TOC_RE = re.compile(r"(?:\t|\.{3,}|…)\s*\d{1,3}\s*$")
+# абзац-привязка после «Приложение № N»: «к приказу…», «к Правилам…» — не название приложения
+_ATTRIBUTION_RE = re.compile(r"^\s*к\s", re.IGNORECASE)
 
 # «1.1. текст», «1.1 текст», «1. текст», «1) текст»; но не «26 702 руб.», не «04.09.2026», не «2026 г.»
 _NUMBER_RE = re.compile(r"^\s*(?:(\d+(?:\.\d+)+)\.?|(\d+)[.)])(?=\s+\S)")
@@ -79,6 +92,7 @@ class _Unit:
     page_no: int | None
     level: int = 0
     number: str | None = None
+    appendix: bool = False
 
 
 @dataclass
@@ -91,6 +105,18 @@ class _Draft:
     refs: list[str] = field(default_factory=list)
     page_no: int | None = None
     tokens: int = 0
+    list_mode: bool = False
+
+
+@dataclass(frozen=True)
+class _Level:
+    """Открытый заголовок в стеке разделов."""
+
+    level: int
+    crumb: str
+    text: str
+    promoted: bool = field(metadata={"doc": "Нумерованный абзац-раздел, а не заголовок Docling"})
+    appendix: bool = False
 
 
 def _clean(text: str) -> str:
@@ -165,6 +191,9 @@ class StructuralChunker:
             raw = getattr(item, "text", None)
             if not raw or not raw.strip():
                 continue
+            if _TOC_RE.search(raw):
+                # строка оглавления: иначе «6. Режим… 14» — ложный раздел, «Приложение № 1 25» — приложение
+                continue
             if label in HEADER_LABELS:
                 hashes = _HASHES_RE.match(raw)
                 header_level = len(hashes.group(1)) if hashes else int(getattr(item, "level", 1) or 1)
@@ -190,6 +219,52 @@ class StructuralChunker:
             carried_number = None
             units.append(_Unit("paragraph", text, [item.self_ref], _page(item), number=number))
         return units
+
+    def _appendices(self, units: list[_Unit]) -> list[_Unit]:
+        """Абзац «Приложение № N» (не первый в документе) с названием → заголовок приложения.
+
+        Абзацы-привязки («к приказу…», «к Правилам…») остаются в тексте; названием считаются до двух
+        следующих коротких ненумерованных абзацев (или остаток строки: «Приложение № 3. Лист оповещения»).
+        Первый абзац документа не трогаем: «Приложение 1 к приказу…» в начале файла-вложения говорит о
+        файле целиком, а не открывает раздел."""
+        result: list[_Unit] = []
+        index = 0
+        while index < len(units):
+            unit = units[index]
+            match = _APPENDIX_RE.match(unit.text) if unit.kind == "paragraph" and index > 0 else None
+            if match is None or len(unit.text.split()) > self._settings.appendix_max_words:
+                result.append(unit)
+                index += 1
+                continue
+            title_parts: list[str] = []
+            rest = unit.text[match.end() :].strip(" .:;—-")
+            if rest:
+                title_parts.append(rest)
+            refs = list(unit.refs)
+            attributions: list[_Unit] = []
+            index += 1
+            while index < len(units):
+                following = units[index]
+                if following.kind != "paragraph" or following.number is not None:
+                    break
+                if _APPENDIX_RE.match(following.text):
+                    break  # следующее приложение без текста («Форма…» — только таблица или картинка)
+                if _ATTRIBUTION_RE.match(following.text) and not title_parts:
+                    attributions.append(following)
+                    index += 1
+                    continue
+                words = len(following.text.split())
+                sentence = following.text.rstrip().endswith((".", ";", ":"))  # тело, а не название
+                if words > self._settings.appendix_title_max_words or len(title_parts) >= 2 or sentence:
+                    break
+                title_parts.append(following.text)
+                refs.extend(following.refs)
+                index += 1
+            title = " ".join(title_parts)
+            text = f"{APPENDIX_PREFIX} № {match.group(1)}" + (f". {title}" if title else "")
+            result.append(_Unit("header", text, refs, unit.page_no, appendix=True))
+            result.extend(attributions)
+        return result
 
     def _rest_after_number(self, text: str) -> str:
         return _HEADER_NUMBER_RE.sub("", text, count=1).strip()
@@ -237,6 +312,7 @@ class StructuralChunker:
         ):
             title = units[0].text
             units = units[1:]
+        units = self._appendices(units)
         structured = any(unit.kind == "header" for unit in units) or any(
             unit.kind == "paragraph" and unit.number for unit in units
         )
@@ -248,9 +324,10 @@ class StructuralChunker:
         self, units: list[_Unit], root_crumbs: tuple[str, ...], file_sha256: str
     ) -> list[Chunk]:
         chunks: list[Chunk] = []
-        # (уровень, крошка, текст заголовка, это нумерованный абзац-раздел, а не заголовок Docling)
-        stack: list[tuple[int, str, str, bool]] = []
+        stack: list[_Level] = []
         draft: _Draft | None = None
+        # приложения — на верхнем уровне заголовков документа (сиблинги разделов, а не их продолжение)
+        top_level = min((unit.level for unit in units if unit.kind == "header" and unit.level > 0), default=1)
 
         def flush() -> None:
             nonlocal draft
@@ -261,20 +338,22 @@ class StructuralChunker:
         for unit in units:
             if unit.kind == "header":
                 flush()
-                promoted = unit.level == 0
-                if promoted:
+                promoted = unit.level == 0 and not unit.appendix
+                if unit.appendix:
+                    level = top_level
+                elif promoted:
                     # нумерованные разделы («1.», «2.») — на уровень ниже последнего настоящего заголовка
-                    real_levels = [entry[0] for entry in stack if not entry[3]]
+                    real_levels = [entry.level for entry in stack if not entry.promoted]
                     level = (real_levels[-1] if real_levels else 0) + 1
                 else:
                     level = unit.level
-                while stack and stack[-1][0] >= level:
+                while stack and stack[-1].level >= level:
                     stack.pop()
-                stack.append((level, self._header_crumb(unit), unit.text, promoted))
+                stack.append(_Level(level, self._header_crumb(unit), unit.text, promoted, unit.appendix))
                 continue
-            section = tuple(item[1] for item in stack)
+            section = tuple(item.crumb for item in stack)
             section_key = self._settings.breadcrumb_separator.join(section)
-            heading = stack[-1][2] if stack else None
+            heading = stack[-1].text if stack else None
             if unit.kind == "table":
                 flush()
                 table_draft = _Draft(
@@ -283,10 +362,15 @@ class StructuralChunker:
                 chunks.extend(self._emit(table_draft, "table", "structural", file_sha256, len(chunks)))
                 continue
             clause = unit.number
+            # внутри приложения «1. Мастер…», «2. Специалист…» — записи перечня, а не пункты документа
+            list_entry = clause is not None and "." not in clause and any(item.appendix for item in stack)
+            if list_entry:
+                clause = None
             crumbs = root_crumbs + section + ((f"{CLAUSE_PREFIX} {clause}",) if clause else ())
             unit_tokens = self._count(unit.text)
             if draft is not None and (
-                draft.breadcrumbs != crumbs or draft.tokens >= self._settings.min_tokens
+                draft.breadcrumbs != crumbs
+                or (draft.tokens >= self._settings.min_tokens and not (list_entry and draft.list_mode))
             ):
                 flush()
             if draft is None:
@@ -294,6 +378,7 @@ class StructuralChunker:
             draft.parts.append(unit.text)
             draft.refs.extend(unit.refs)
             draft.tokens += unit_tokens
+            draft.list_mode = draft.list_mode or list_entry
         flush()
         return chunks
 

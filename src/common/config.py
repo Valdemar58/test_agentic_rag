@@ -183,6 +183,12 @@ class ChunkingSettings(StrictModel):
     breadcrumb_separator: str = Field(description="Разделитель хлебных крошек в тексте чанка")
     section_title_max_words: int = Field(gt=0, description="Короткий нумерованный абзац = заголовок раздела")
     breadcrumb_max_words: int = Field(gt=0, description="Крошка длиннее стольких слов обрезается с «…»")
+    appendix_max_words: int = Field(
+        gt=0, description="Абзац «Приложение № N» не длиннее стольких слов открывает раздел приложения"
+    )
+    appendix_title_max_words: int = Field(
+        gt=0, description="Абзацы после «Приложение № N» не длиннее стольких слов — его название"
+    )
     parent_max_tokens: int = Field(
         gt=0, description="Предел parent-чанка (раздела); длиннее — несколько окон"
     )
