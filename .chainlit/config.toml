@@ -1,0 +1,93 @@
+# Настройки Chainlit (этап 7). Имя ассистента при старте перекрывается ui.title из configs/app.yaml;
+# хост и порт — из секции ui там же (python -m ui). Загрузка файлов, аудио и MCP-панель выключены:
+# в MVP пользователь только задаёт вопросы по проиндексированным документам.
+
+[project]
+# Переменные окружения, которые запрашиваются у каждого пользователя (не нужны)
+user_env = []
+
+# Сколько секунд сессия хранится при потере соединения
+session_timeout = 3600
+
+# Срок жизни пользовательской сессии (15 дней)
+user_session_timeout = 1296000
+
+# Кэш сторонних библиотек (LangChain) не используется
+cache = false
+
+# Переменные окружения пользователя в БД не пишутся
+persist_user_env = false
+mask_user_env = false
+
+# Разрешённые origin
+allow_origins = ["*"]
+
+[features]
+# HTML в сообщениях не рендерится (безопасность), формулы не нужны
+unsafe_allow_html = false
+latex = false
+
+# Markdown в сообщениях пользователя и автопрокрутка
+user_message_markdown = true
+user_message_autoscroll = true
+assistant_message_autoscroll = true
+
+# Теги диалога по профилю чата (профили не используются)
+auto_tag_thread = true
+
+# Редактирование своих сообщений выключено: ответ привязан к трейсу и оценке (FR-7, FR-8)
+edit_message = false
+
+# Публикация диалогов и избранное — вне MVP
+allow_thread_sharing = false
+favorites = false
+
+[features.slack]
+reaction_on_message_received = false
+
+[features.spontaneous_file_upload]
+    enabled = false
+    accept = ["*/*"]
+    max_files = 20
+    max_size_mb = 500
+
+[features.audio]
+    enabled = false
+    sample_rate = 24000
+
+[features.mcp]
+    enabled = false
+
+    [features.mcp.user_servers]
+        enabled = false
+        allowed_urls = []
+
+[UI]
+# Имя ассистента (перекрывается ui.title из configs/app.yaml)
+name = "Поиск по документам СЭД"
+
+description = "Агентский поиск по документам СЭД с цитатами"
+
+default_theme = "light"
+
+# Интерфейс на русском для всех пользователей (NFR-1); перевод — .chainlit/translations/ru-RU.json
+language = "ru-RU"
+
+layout = "default"
+default_sidebar_state = "open"
+chat_settings_location = "message_composer"
+default_chat_settings_open = false
+
+# Новый диалог без подтверждения
+confirm_new_chat = false
+
+# Ход работы агента показывается полностью: шаги с запросами и итогами (FR-7)
+cot = "full"
+
+alert_style = "classic"
+
+logo_file_url = ""
+default_avatar_file_url = ""
+
+[meta]
+generated_by = "2.12.0"

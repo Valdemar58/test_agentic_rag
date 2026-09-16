@@ -92,9 +92,9 @@ class Message(Base):
     conversation_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("conversation.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    parent_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("message.id", ondelete="SET NULL"), nullable=True
-    )
+    # Ссылка на родительский шаг без внешнего ключа (миграция 0003): Chainlit пишет шаги фоновыми
+    # задачами, и потомок может попасть в БД раньше родителя; целостность обеспечивает диалог.
+    parent_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
     kind: Mapped[str] = mapped_column(String(30), nullable=False, index=True)
     name: Mapped[str] = mapped_column(String(200), nullable=False, default="")
     input_text: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -111,7 +111,6 @@ class Message(Base):
     finished_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     conversation: Mapped[Conversation] = relationship(back_populates="messages")
-    elements: Mapped[list[Element]] = relationship(back_populates="message", cascade="all, delete-orphan")
     feedback: Mapped[Feedback | None] = relationship(
         back_populates="message", cascade="all, delete-orphan", uselist=False
     )
@@ -126,9 +125,9 @@ class Element(Base):
     conversation_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("conversation.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    message_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("message.id", ondelete="CASCADE"), nullable=True, index=True
-    )
+    # Сообщение элемента без внешнего ключа (миграция 0003): элемент и сообщение пишутся Chainlit
+    # параллельными задачами; элементы удаляются вместе с сообщением в хранилище UI
+    message_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True, index=True)
     name: Mapped[str] = mapped_column(String(500), nullable=False)
     kind: Mapped[str] = mapped_column(String(30), nullable=False)
     mime: Mapped[str | None] = mapped_column(String(100), nullable=True)
@@ -144,8 +143,6 @@ class Element(Base):
     created_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
     )
-
-    message: Mapped[Message | None] = relationship(back_populates="elements")
 
 
 class Feedback(Base):

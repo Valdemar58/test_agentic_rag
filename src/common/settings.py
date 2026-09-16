@@ -56,6 +56,11 @@ class Settings(BaseSettings):
     langfuse_public_key: str = Field(default="")
     langfuse_secret_key: SecretStr = Field(default=SecretStr(""))
 
+    # Вход в UI (FR-7): в dev один пользователь по логину и паролю; в проде — OIDC через переменные
+    # OAUTH_GENERIC_* Chainlit (решение заказчика 2026-09-16), которые Chainlit читает сам.
+    ui_username: str = Field(default="admin", description="Логин единственного пользователя UI (dev)")
+    ui_password: SecretStr = Field(default=SecretStr("admin"), description="Пароль пользователя UI (dev)")
+
     @property
     def database_url(self) -> str:
         password = self.app_db_password.get_secret_value()

@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-# Образ приложения: MCP-сервер, мок сервиса карточек (и UI с этапа 7). Внешний код SDK и сервиса
+# Образ приложения: MCP-сервер, мок сервиса карточек и UI Chainlit. Внешний код SDK и сервиса
 # карточек в образ не попадает — монтируется томами (§8.0 ТЗ). torch — сборка CPU: в рантайме
 # эмбеддинги и reranker считаются на CPU (§2), инжест с GPU выполняется на хосте.
 FROM python:3.13-slim-bookworm
@@ -37,6 +37,11 @@ COPY src src
 COPY mocks mocks
 COPY configs configs
 COPY tools/tessa_export tools/tessa_export
+# UI: миграции Alembic (agent-ui применяет их при старте), настройки Chainlit и справка
+COPY alembic.ini alembic.ini
+COPY alembic alembic
+COPY .chainlit .chainlit
+COPY chainlit.md chainlit.md
 # Второй sync ставит проект и workspace-пакет; torch CPU — после него: sync приводит окружение
 # к lock и удалил бы пакет, поставленный отдельно.
 RUN --mount=type=cache,target=/root/.cache/uv \

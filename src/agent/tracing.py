@@ -44,6 +44,10 @@ class Tracing(Protocol):
 
     def step(self, name: str, *, kind: StepKind, input: Any = None) -> AbstractContextManager[StepHandle]: ...
 
+    def score(self, trace_id: str, *, name: str, value: float, comment: str | None = None) -> None:
+        """Оценка трейса (👍/👎 пользователя, FR-7): score Langfuse, привязанный к трейсу ответа."""
+        ...
+
     def flush(self) -> None: ...
 
 
@@ -66,6 +70,9 @@ class NoopTracing:
     @contextmanager
     def step(self, name: str, *, kind: StepKind, input: Any = None) -> Iterator[StepHandle]:
         yield _NoopHandle()
+
+    def score(self, trace_id: str, *, name: str, value: float, comment: str | None = None) -> None:
+        return None
 
     def flush(self) -> None:
         return None
@@ -133,6 +140,11 @@ class LangfuseTracing:
         client = cast(Any, self._client)
         with client.start_as_current_observation(name=name, as_type=kind, input=input) as span:
             yield _LangfuseSpanHandle(span)
+
+    def score(self, trace_id: str, *, name: str, value: float, comment: str | None = None) -> None:
+        client = cast(Any, self._client)
+        client.create_score(trace_id=trace_id, name=name, value=value, data_type="NUMERIC", comment=comment)
+        client.flush()
 
     def flush(self) -> None:
         self._client.flush()

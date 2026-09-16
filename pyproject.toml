@@ -142,6 +142,12 @@ ignore_missing_imports = true
 module = ["tests.*"]
 disallow_untyped_decorators = false
 
+[[tool.mypy.overrides]]
+# Декораторы обработчиков и часть API Chainlit (user_session, Step.send, utc_now) без аннотаций
+module = ["ui.app"]
+disallow_untyped_decorators = false
+disallow_untyped_calls = false
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # корень — для пакета mocks (он не устанавливается в окружение, в отличие от src)

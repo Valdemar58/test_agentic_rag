@@ -127,6 +127,7 @@ class RecordingTracing:
     def __init__(self) -> None:
         self.questions: list[dict[str, Any]] = []
         self.steps: list[dict[str, Any]] = []
+        self.scores: list[dict[str, Any]] = []
         self.flushes = 0
 
     @contextmanager
@@ -151,6 +152,9 @@ class RecordingTracing:
         }
         self.steps.append(record)
         yield _RecordingHandle(record)
+
+    def score(self, trace_id: str, *, name: str, value: float, comment: str | None = None) -> None:
+        self.scores.append({"trace_id": trace_id, "name": name, "value": value, "comment": comment})
 
     def flush(self) -> None:
         self.flushes += 1

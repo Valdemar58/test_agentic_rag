@@ -11,7 +11,7 @@
 #   runtime        также mcp-server (инструменты агента: bge-m3 и reranker на CPU)
 #   mock           mock-card-service: мок сервиса карточек на архиве экспорта (dev; stack.py включает
 #                  его вместе с runtime, --no-mock — для стенда с реальным сервисом карточек)
-# agent-ui добавляется на этапе 7.
+#   runtime        также agent-ui: Chainlit на http://localhost:${UI_PORT:-8080} (миграции применяет сам)
 # Лимиты памяти контейнеров рассчитаны на VM Docker Desktop 16 ГиБ (решение заказчика 2026-09-14).
 # Внешних вызовов нет: телеметрия vLLM, Qdrant и Langfuse выключена, Hugging Face — офлайн (NFR-5).
 
@@ -201,6 +201,58 @@ services:
       resources:
         limits:
           memory: ${MCP_MEMORY_LIMIT:-6g}
+
+  agent-ui:
+    <<: *app
+    profiles: [runtime]
+    # Миграции Alembic применяются при старте: чистая БД → рабочее состояние без ручных шагов (FR-9)
+    command: ["python", "-m", "ui", "--migrate", "--headless"]
+    depends_on:
+      postgres-app:
+        condition: service_healthy
+      mcp-server:
+        condition: service_healthy
+      vllm-qwen:
+        condition: service_healthy
+    environment:
+      APP_DB_HOST: postgres-app
+      APP_DB_USER: ${APP_DB_USER:-rag}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:-rag}
+      APP_DB_NAME: ${APP_DB_NAME:-rag}
+      MCP_URL: http://mcp-server:8020/mcp
+      LLM_BASE_URL: http://vllm-qwen:8000/v1
+      LANGFUSE_ENABLED: ${LANGFUSE_ENABLED:-false}
+      LANGFUSE_URL: http://langfuse-web:3000
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-pk-lf-agentic-rag-dev}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-sk-lf-agentic-rag-dev}
+      # Вход: в dev — логин и пароль; в проде — OIDC через OAUTH_GENERIC_* (передаются из .env, если заданы)
+      UI_USERNAME: ${UI_USERNAME:-admin}
+      UI_PASSWORD: ${UI_PASSWORD:-admin}
+      CHAINLIT_AUTH_SECRET: ${CHAINLIT_AUTH_SECRET:-dev-chainlit-secret-change-me}
+      OAUTH_GENERIC_NAME: ${OAUTH_GENERIC_NAME:-}
+      OAUTH_GENERIC_CLIENT_ID: ${OAUTH_GENERIC_CLIENT_ID:-}
+      OAUTH_GENERIC_CLIENT_SECRET: ${OAUTH_GENERIC_CLIENT_SECRET:-}
+      OAUTH_GENERIC_AUTH_URL: ${OAUTH_GENERIC_AUTH_URL:-}
+      OAUTH_GENERIC_TOKEN_URL: ${OAUTH_GENERIC_TOKEN_URL:-}
+      OAUTH_GENERIC_USER_INFO_URL: ${OAUTH_GENERIC_USER_INFO_URL:-}
+      OAUTH_GENERIC_SCOPES: ${OAUTH_GENERIC_SCOPES:-}
+      OAUTH_GENERIC_USER_IDENTIFIER: ${OAUTH_GENERIC_USER_IDENTIFIER:-email}
+    ports:
+      - "${UI_PORT:-8080}:8080"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=5)"
+      interval: 15s
+      timeout: 10s
+      retries: 12
+      start_period: 90s
+    deploy:
+      resources:
+        limits:
+          memory: ${UI_MEMORY_LIMIT:-1g}
 
   # ---------- профиль mock: сервис карточек на архиве экспорта ----------
   mock-card-service:

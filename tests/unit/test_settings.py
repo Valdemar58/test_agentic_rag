@@ -25,6 +25,8 @@ ENV_KEYS = [
     "LANGFUSE_URL",
     "LANGFUSE_PUBLIC_KEY",
     "LANGFUSE_SECRET_KEY",
+    "UI_USERNAME",
+    "UI_PASSWORD",
 ]
 
 
@@ -48,6 +50,7 @@ def test_defaults_point_to_loopback_and_ports_from_config(clean_env: pytest.Monk
     assert settings.langfuse_enabled is False and settings.langfuse_url == f"http://{LOCALHOST}:3000"
     assert settings.card_service_url is None
     assert settings.resolve_card_service_url(config) == f"http://{LOCALHOST}:{config.mock_card_service.port}"
+    assert settings.ui_username == "admin" and settings.ui_password.get_secret_value() == "admin"
 
 
 def test_environment_overrides_and_secrets_are_hidden(clean_env: pytest.MonkeyPatch) -> None:

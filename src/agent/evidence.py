@@ -76,6 +76,13 @@ class ToolCallRecord(BaseModel):
     document_aliases: list[str] = Field(default_factory=list)
 
 
+class EvidenceSnapshot(BaseModel):
+    """Часть реестра для сохранения с ответом: по ней диалог восстанавливается из БД (этап 7)."""
+
+    documents: list[KnownDocument] = Field(default_factory=list)
+    fragments: list[Fragment] = Field(default_factory=list)
+
+
 def _alias_number(alias: str) -> int:
     return int(alias[1:])
 
@@ -216,6 +223,54 @@ class EvidenceRegistry:
             filters[DOC_IDS_FILTER] = [self.resolve(item) for item in filters[DOC_IDS_FILTER]]
             resolved[FILTERS_ARGUMENT] = filters
         return resolved
+
+    # ---------- снимок и восстановление (возобновление диалога из БД) ----------
+
+    def snapshot(self, document_aliases: list[str], fragment_aliases: list[str]) -> EvidenceSnapshot:
+        """Документы и фрагменты с указанными псевдонимами (плюс документы фрагментов)."""
+        fragments = [
+            fragment for alias in fragment_aliases if (fragment := self.fragment_by_alias(alias)) is not None
+        ]
+        wanted = list(document_aliases) + [fragment.doc_alias for fragment in fragments]
+        documents: dict[str, KnownDocument] = {}
+        for alias in wanted:
+            document = self.document_by_alias(alias)
+            if document is not None:
+                documents.setdefault(document.alias, document)
+        return EvidenceSnapshot(
+            documents=[item.model_copy() for item in documents.values()],
+            fragments=[item.model_copy() for item in fragments],
+        )
+
+    def restore(self, snapshot: EvidenceSnapshot) -> None:
+        """Возвращает документы и фрагменты в реестр с их прежними псевдонимами.
+
+        Уже известный документ (по ID) обновляется непустыми полями; конфликт псевдонима с другим
+        документом невозможен при восстановлении по порядку ходов, а на всякий случай запись
+        с занятым псевдонимом пропускается."""
+        for document in snapshot.documents:
+            known = self._documents.get(document.doc_id)
+            if known is not None:
+                self.register_document(
+                    document.doc_id,
+                    label=document.label,
+                    **document.model_dump(exclude={"alias", "doc_id", "label"}),
+                )
+                continue
+            if document.alias in self._doc_aliases:
+                continue
+            self._documents[document.doc_id] = document.model_copy()
+            self._doc_aliases[document.alias] = document.doc_id
+            self._doc_counter = max(self._doc_counter, _alias_number(document.alias))
+        for fragment in snapshot.fragments:
+            if fragment.chunk_id in self._fragments or fragment.alias in self._fragment_aliases:
+                continue
+            if fragment.doc_id not in self._documents:
+                continue
+            self._fragments[fragment.chunk_id] = fragment.model_copy()
+            self._fragment_aliases[fragment.alias] = fragment.chunk_id
+            self._fragment_counter = max(self._fragment_counter, _alias_number(fragment.alias))
+        self._clock = max([self._clock, *(d.last_used for d in self._documents.values())])
 
     # ---------- кэш сессии ----------
 

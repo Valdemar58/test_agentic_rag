@@ -29,7 +29,12 @@ artifacts/
 
 # Логи и служебные каталоги инструментов
 *.log
-.chainlit/
+# Chainlit: в репозитории только настройки и русский перевод; остальные переводы и загрузки — нет
+.chainlit/*
+!.chainlit/config.toml
+!.chainlit/translations/
+.chainlit/translations/*
+!.chainlit/translations/ru-RU.json
 .files/
 .langfuse/
 .claude/

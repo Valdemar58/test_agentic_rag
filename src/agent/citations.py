@@ -42,6 +42,7 @@ class Source(BaseModel):
     clause: str | None = None
     page_no: int | None = None
     text: str | None = Field(description="Текст фрагмента или сводка карточки — для показа по клику")
+    context: str | None = Field(default=None, description="Текст раздела-родителя фрагмента, если есть")
 
     def line(self) -> str:
         """Строка блока «Источники» (FR-4: название/номер, дата, раздел/пункт)."""
@@ -81,6 +82,7 @@ def _fragment_source(number: int, fragment: Fragment, document: KnownDocument | 
         clause=fragment.clause,
         page_no=fragment.page_no,
         text=fragment.text,
+        context=fragment.context,
     )
 
 
