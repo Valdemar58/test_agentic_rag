@@ -78,9 +78,11 @@ async def test_ac21_follow_ups_pick_card_relations_and_content(
     session = AgentSession(config)
     first = await runner.ask(SEARCH_QUESTION, session)
     assert first.document_aliases, "без найденных документов уточнения бессмысленны"
-    # статус документа известен уже из поиска, а подписант и согласующие — только из карточки
+    # статус документа известен уже из поиска, а подписант и согласующие — только из карточки; если цикл
+    # первого вопроса уже прочитал карточку, уточнение по FR-6 отвечается из кэша сессии без вызова
     card = await runner.ask("Кто подписал первый из найденных документов и кто его согласовывал?", session)
-    assert TOOL_CARD in _tools([call.name for call in card.tool_calls])
+    card_calls = _tools([call.name for call in first.tool_calls + card.tool_calls])
+    assert TOOL_CARD in card_calls and not card.refused
     related = await runner.ask("Какими документами он был отменён, изменён или дополнен?", session)
     assert {TOOL_RELATED, TOOL_SEARCH} & _tools([call.name for call in related.tool_calls])
     content = await runner.ask("Прочитай этот документ целиком и перескажи структуру по разделам", session)
