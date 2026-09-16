@@ -152,7 +152,11 @@ async def test_search_then_answer_with_aliases_and_events(harness: Harness) -> N
     ready = events[-1]
     assert isinstance(ready, AnswerReady)
     answer = ready.answer
-    assert answer.text == "Отчёт по охране труда сдаётся до пятого числа [S1]."
+    # FR-4: ссылка модели [S1] стала [1], блок «Источники» построен по реестру и ведёт к чанку индекса
+    assert answer.text.startswith(
+        "Отчёт по охране труда сдаётся до пятого числа [1].\n\nИсточники:\n[1] Приказ №144"
+    )
+    assert len(answer.sources) == 1 and answer.sources[0].alias == "S1" and not answer.unresolved_markers
     assert not answer.refused and not answer.budget_exhausted
     assert answer.search_queries == [QUERY] and answer.tool_calls[0].name == TOOL_SEARCH
     assert answer.fragment_aliases[0] == "S1" and answer.document_aliases[0] == "D1"
@@ -162,6 +166,7 @@ async def test_search_then_answer_with_aliases_and_events(harness: Harness) -> N
     assert document.label == "Приказ №144 от 15.01.2026" and document.doc_status == "active"
     fragment = session.registry.fragment_by_alias("S1")
     assert fragment is not None and "пятого" in fragment.text and fragment.doc_alias == "D1"
+    assert answer.sources[0].chunk_id == fragment.chunk_id and answer.sources[0].doc_id == harness.order_id
 
     # LLM цикла видит компактный текст с псевдонимами, а не JSON с UUID
     tool_text = _tool_messages(harness.llms["tool_loop"])[0]
@@ -231,7 +236,7 @@ async def test_budget_never_exceeds_max_tool_calls(harness: Harness) -> None:
     )
     answer = await runner.ask("Когда сдаётся отчёт?", harness.session())
     assert len(answer.tool_calls) == limit == 8  # AC-1.3
-    assert answer.budget_exhausted and answer.text.endswith(BUDGET_CAVEAT)
+    assert answer.budget_exhausted and BUDGET_CAVEAT in answer.text
     # LLM просил инструменты и сверх бюджета: вызовы не выполнены, вместо результата — пояснение
     assert len(harness.llms["tool_loop"].inputs) >= limit + 2
     assert BUDGET_EXHAUSTED.format(limit=limit) in _tool_messages(harness.llms["tool_loop"])

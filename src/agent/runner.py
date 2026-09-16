@@ -19,6 +19,7 @@ from llama_index.core.memory import ChatMemoryBuffer
 from pydantic import BaseModel, Field
 from workflows.errors import WorkflowTimeoutError
 
+from agent.citations import Source, cite_answer
 from agent.evidence import EvidenceRegistry, ToolCallRecord
 from agent.llm import thinking_text
 from agent.memory import ConversationMemory, Turn, render_history
@@ -111,7 +112,9 @@ class AnswerDelta(AgentEvent):
 
 class Answer(BaseModel):
     question: str
-    text: str
+    text: str = Field(description="Ответ с нумерованными ссылками [1], [2] и блоком «Источники» (FR-4)")
+    sources: list[Source] = Field(description="Источники по номерам ссылок: чанк индекса или карточка")
+    unresolved_markers: list[str] = Field(description="Ссылки модели, не найденные в реестре (удалены)")
     refused: bool = Field(description="Ответ начинается с явного отказа «В документах ответа нет»")
     budget_exhausted: bool
     rewritten_query: str | None = Field(description="Переписанный запрос, если отличался от вопроса")
@@ -223,9 +226,12 @@ class AgentRunner:
                 thinking = thinking_text(final)
             elif delta:
                 yield AnswerDelta(text=delta)
-        text = text.strip()
-        if run.budget_exhausted and BUDGET_CAVEAT not in text:
-            text = f"{text}\n\n{BUDGET_CAVEAT}".strip()
+        # FR-4: маркеры [S#]/[D#] → нумерованные ссылки и блок «Источники» по реестру (6.5)
+        cited = cite_answer(text, session.registry)
+        body = cited.body
+        if run.budget_exhausted and BUDGET_CAVEAT not in body:
+            body = f"{body}\n\n{BUDGET_CAVEAT}".strip()
+        text = f"{body}\n\n{cited.sources_block}" if cited.sources else body
         session.registry.trim()
         rewritten_query = rewritten.query if rewritten.changed else None
         session.memory.add(
@@ -239,6 +245,8 @@ class AgentRunner:
         answer = Answer(
             question=question,
             text=text,
+            sources=cited.sources,
+            unresolved_markers=cited.unresolved,
             refused=rewritten.needs_search and text.startswith(NO_ANSWER_PHRASE),
             budget_exhausted=run.budget_exhausted,
             rewritten_query=rewritten.query if rewritten.changed else None,
