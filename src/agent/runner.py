@@ -10,6 +10,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import time
+import uuid
 from collections.abc import AsyncIterator, Callable
 from typing import Any, Literal, Protocol
 
@@ -37,6 +38,7 @@ from agent.prompts import (
 from agent.rendering import render_cached_evidence, render_evidence, status_text_for
 from agent.rewrite import QueryRewriter, RewrittenQuery
 from agent.tools import AgentTools, ToolRun
+from agent.tracing import NoopTracing, QuestionHandle, Tracing
 from common.config import AppConfig, LlmRole
 
 logger = logging.getLogger(__name__)
@@ -113,6 +115,7 @@ class AnswerDelta(AgentEvent):
 class Answer(BaseModel):
     question: str
     text: str = Field(description="Ответ с нумерованными ссылками [1], [2] и блоком «Источники» (FR-4)")
+    trace_id: str | None = Field(default=None, description="Трейс Langfuse этого вопроса (FR-8)")
     sources: list[Source] = Field(description="Источники по номерам ссылок: чанк индекса или карточка")
     unresolved_markers: list[str] = Field(description="Ссылки модели, не найденные в реестре (удалены)")
     refused: bool = Field(description="Ответ начинается с явного отказа «В документах ответа нет»")
@@ -139,9 +142,12 @@ class AnswerReady(AgentEvent):
 
 
 class AgentSession:
-    """Состояние одного диалога: реестр свидетельств (кэш найденных документов) и память ходов (FR-6)."""
+    """Состояние одного диалога: реестр свидетельств (кэш найденных документов) и память ходов (FR-6).
 
-    def __init__(self, config: AppConfig) -> None:
+    `session_id` связывает трейсы Langfuse одного диалога (FR-8); UI передаёт id диалога из БД."""
+
+    def __init__(self, config: AppConfig, session_id: str | None = None) -> None:
+        self.id = session_id or uuid.uuid4().hex
         self.registry = EvidenceRegistry(config.agent.session_document_cache)
         self.memory = ConversationMemory()
 
@@ -159,12 +165,18 @@ class AgentRunner:
         tools: AgentTools,
         llms: LlmFactory,
         *,
+        tracing: Tracing | None = None,
         today: Callable[[], dt.date] = dt.date.today,
     ) -> None:
         self._config = config
         self._tools = tools
         self._llms = llms
+        self._tracing: Tracing = tracing or NoopTracing()
         self._today = today
+
+    @property
+    def tracing(self) -> Tracing:
+        return self._tracing
 
     async def ask(self, question: str, session: AgentSession) -> Answer:
         """Вопрос → ответ без промежуточных событий (CLI, eval, тесты)."""
@@ -176,11 +188,24 @@ class AgentRunner:
         return answer
 
     async def run(self, question: str, session: AgentSession) -> AsyncIterator[AgentEvent]:
-        """Вопрос → поток событий; последнее — `AnswerReady`."""
+        """Вопрос → поток событий; последнее — `AnswerReady`. Весь вопрос — один трейс (FR-8)."""
+        with self._tracing.question(question, session_id=session.id) as trace:
+            async for event in self._run(question, session, trace):
+                yield event
+
+    async def _run(
+        self, question: str, session: AgentSession, trace: QuestionHandle
+    ) -> AsyncIterator[AgentEvent]:
         agent_settings = self._config.agent
         started = time.perf_counter()
         yield RunStarted(question=question)
-        rewritten = await self._rewrite(question, session)
+        with self._tracing.step(
+            "rewrite", kind="chain", input={"question": question, "turns": len(session.memory.turns)}
+        ) as step:
+            rewritten = await self._rewrite(question, session)
+            step.update(
+                output=rewritten.model_dump(exclude={"thinking"}), metadata={"thinking": rewritten.thinking}
+            )
         yield QueryRewritten(
             question=question,
             query=rewritten.query,
@@ -206,10 +231,15 @@ class AgentRunner:
                     run.note_aliases(fragments, documents)
                     user_message = with_cached_evidence(user_message, cached)
                     yield CacheUsed(document_aliases=documents, fragment_aliases=fragments)
-            async for event in self._tool_loop(user_message, run):
-                if isinstance(event, LoopNotes):
-                    notes = event.text
-                yield event
+            with self._tracing.step("tool_loop", kind="agent", input=user_message) as step:
+                async for event in self._tool_loop(user_message, run):
+                    if isinstance(event, LoopNotes):
+                        notes = event.text
+                    yield event
+                step.update(
+                    output={"notes": notes, "tool_calls": [call.model_dump() for call in run.calls]},
+                    metadata={"budget_exhausted": run.budget_exhausted, "search_queries": run.search_queries},
+                )
         loop_seconds = time.perf_counter() - started
 
         answer_started = time.perf_counter()
@@ -220,14 +250,27 @@ class AgentRunner:
             if rewritten.needs_search
             else self._compose_chat(question, session)
         )
-        async for delta, final in stream:
-            if final is not None:
-                text = final.content or ""
-                thinking = thinking_text(final)
-            elif delta:
-                yield AnswerDelta(text=delta)
-        # FR-4: маркеры [S#]/[D#] → нумерованные ссылки и блок «Источники» по реестру (6.5)
-        cited = cite_answer(text, session.registry)
+        with self._tracing.step(
+            "answer",
+            kind="chain",
+            input={"notes": notes, "fragments": run.fragment_aliases, "documents": run.document_aliases},
+        ) as step:
+            async for delta, final in stream:
+                if final is not None:
+                    text = final.content or ""
+                    thinking = thinking_text(final)
+                elif delta:
+                    yield AnswerDelta(text=delta)
+            # FR-4: маркеры [S#]/[D#] → нумерованные ссылки и блок «Источники» по реестру (6.5)
+            cited = cite_answer(text, session.registry)
+            step.update(
+                output=cited.body,
+                metadata={
+                    "thinking": thinking,
+                    "sources": len(cited.sources),
+                    "unresolved": cited.unresolved,
+                },
+            )
         body = cited.body
         if run.budget_exhausted and BUDGET_CAVEAT not in body:
             body = f"{body}\n\n{BUDGET_CAVEAT}".strip()
@@ -245,6 +288,7 @@ class AgentRunner:
         answer = Answer(
             question=question,
             text=text,
+            trace_id=trace.trace_id,
             sources=cited.sources,
             unresolved_markers=cited.unresolved,
             refused=rewritten.needs_search and text.startswith(NO_ANSWER_PHRASE),
@@ -261,10 +305,27 @@ class AgentRunner:
             loop_seconds=loop_seconds,
             answer_seconds=time.perf_counter() - answer_started,
         )
+        trace.update(
+            output={
+                "answer": text,
+                "refused": answer.refused,
+                "sources": [source.line() for source in cited.sources],
+            },
+            metadata={
+                "rewritten_query": answer.rewritten_query,
+                "tool_calls": len(run.calls),
+                "budget_exhausted": run.budget_exhausted,
+                "seconds": round(answer.seconds, 2),
+            },
+        )
         yield AnswerReady(answer=answer)
         # сводка старых ходов — после выдачи ответа, чтобы не задерживать его (FR-6)
         if session.memory.needs_compaction(agent_settings.memory):
-            await session.memory.compact(self._llms("summary"), agent_settings.memory)
+            with self._tracing.step(
+                "summary", kind="chain", input={"turns": len(session.memory.turns)}
+            ) as step:
+                await session.memory.compact(self._llms("summary"), agent_settings.memory)
+                step.update(output=session.memory.summary)
 
     # ---------- переписывание запроса (FR-6) ----------
 

@@ -48,9 +48,11 @@ class Settings(BaseSettings):
     mcp_url: str | None = Field(default=None, description="URL MCP-сервера для агента")
 
     langfuse_enabled: bool = Field(
-        default=False, description="Трейсинг включается вместе с профилем observability"
+        default=False, description="Трейсинг включается вместе с профилем observability (FR-8)"
     )
-    langfuse_host: str = Field(default="http://localhost:3000")
+    langfuse_url: str = Field(
+        default=f"http://{LOCALHOST}:3000", description="Langfuse self-hosted; имя как в docker-compose.yml"
+    )
     langfuse_public_key: str = Field(default="")
     langfuse_secret_key: SecretStr = Field(default=SecretStr(""))
 

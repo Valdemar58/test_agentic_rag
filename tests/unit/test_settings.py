@@ -22,7 +22,7 @@ ENV_KEYS = [
     "VLM_BASE_URL",
     "MCP_URL",
     "LANGFUSE_ENABLED",
-    "LANGFUSE_HOST",
+    "LANGFUSE_URL",
     "LANGFUSE_PUBLIC_KEY",
     "LANGFUSE_SECRET_KEY",
 ]
@@ -45,7 +45,7 @@ def test_defaults_point_to_loopback_and_ports_from_config(clean_env: pytest.Monk
     assert settings.resolve_llm_base_url(config) == f"http://{LOCALHOST}:{config.vllm.qwen.port}/v1"
     assert settings.resolve_vlm_base_url(config) == f"http://{LOCALHOST}:{config.vllm.dots.port}/v1"
     assert settings.resolve_mcp_url(config) == f"http://{LOCALHOST}:{config.mcp.port}{config.mcp.path}"
-    assert settings.langfuse_enabled is False
+    assert settings.langfuse_enabled is False and settings.langfuse_url == f"http://{LOCALHOST}:3000"
     assert settings.card_service_url is None
     assert settings.resolve_card_service_url(config) == f"http://{LOCALHOST}:{config.mock_card_service.port}"
 

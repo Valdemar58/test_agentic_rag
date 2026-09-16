@@ -7,6 +7,7 @@ from llama_index.core.llms import LLM
 from agent.llm import build_llm
 from agent.runner import AgentRunner
 from agent.tools import AgentTools, McpTransport
+from agent.tracing import build_tracing
 from common.config import AppConfig, LlmRole
 from common.settings import Settings
 
@@ -24,8 +25,9 @@ class RoleLlms:
 
 
 async def build_runner(config: AppConfig, settings: Settings) -> AgentRunner:
-    """Раннер на живом MCP-сервере (`MCP_URL` или порт из конфига) и vLLM профиля runtime."""
+    """Раннер на живом MCP-сервере (`MCP_URL` или порт из конфига) и vLLM; Langfuse — по флагу окружения."""
+    tracing = build_tracing(settings, config.langfuse)
     transport = McpTransport(settings.resolve_mcp_url(config), timeout_s=config.agent.tool_timeout_s)
     tools = AgentTools(transport)
     await tools.load()
-    return AgentRunner(config, tools, RoleLlms(config, settings))
+    return AgentRunner(config, tools, RoleLlms(config, settings), tracing=tracing)

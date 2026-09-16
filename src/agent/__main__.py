@@ -67,6 +67,7 @@ async def _ask(runner: AgentRunner, session: AgentSession, question: str) -> Non
                 f"ответ {answer.answer_seconds:.1f} с; вызовов инструментов {len(answer.tool_calls)}"
                 + ("; бюджет исчерпан" if answer.budget_exhausted else "")
                 + ("; отказ" if answer.refused else "")
+                + (f"; трейс {answer.trace_id}" if answer.trace_id else "")
                 + "]",
                 flush=True,
             )
@@ -86,19 +87,22 @@ async def _main(args: argparse.Namespace) -> int:
         print(f"ОШИБКА СТЕНДА: MCP-сервер {settings.resolve_mcp_url(config)} недоступен: {exc}")
         return EXIT_CONFIG
     session = AgentSession(config)
-    if args.question:
-        await _ask(runner, session, args.question)
+    try:
+        if args.question:
+            await _ask(runner, session, args.question)
+            return EXIT_OK
+        print("Диалог с агентом; пустая строка — выход.")
+        while True:
+            try:
+                question = input(PROMPT).strip()
+            except EOFError:
+                break
+            if not question:
+                break
+            await _ask(runner, session, question)
         return EXIT_OK
-    print("Диалог с агентом; пустая строка — выход.")
-    while True:
-        try:
-            question = input(PROMPT).strip()
-        except EOFError:
-            break
-        if not question:
-            break
-        await _ask(runner, session, question)
-    return EXIT_OK
+    finally:
+        runner.tracing.flush()
 
 
 def main(argv: list[str] | None = None) -> int:

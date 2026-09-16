@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from typing import Any
 
 from fastmcp import Client, FastMCP
@@ -114,6 +115,53 @@ class ScriptedLLM(FunctionCallingLLM):
 
     async def astream_complete(self, prompt: str, formatted: bool = False, **kwargs: Any) -> Any:
         raise NotImplementedError
+
+
+class RecordingTracing:
+    """Трейсинг-заглушка, запоминающая вопросы и шаги с их входами и выходами (контракт `Tracing`)."""
+
+    enabled = True
+
+    def __init__(self) -> None:
+        self.questions: list[dict[str, Any]] = []
+        self.steps: list[dict[str, Any]] = []
+        self.flushes = 0
+
+    @contextmanager
+    def question(self, question: str, *, session_id: str) -> Iterator[Any]:
+        record: dict[str, Any] = {
+            "question": question,
+            "session_id": session_id,
+            "output": None,
+            "metadata": None,
+        }
+        self.questions.append(record)
+        yield _RecordingHandle(record, trace_id=f"trace-{len(self.questions)}")
+
+    @contextmanager
+    def step(self, name: str, *, kind: str, input: Any = None) -> Iterator[Any]:
+        record: dict[str, Any] = {
+            "name": name,
+            "kind": kind,
+            "input": input,
+            "output": None,
+            "metadata": None,
+        }
+        self.steps.append(record)
+        yield _RecordingHandle(record)
+
+    def flush(self) -> None:
+        self.flushes += 1
+
+
+class _RecordingHandle:
+    def __init__(self, record: dict[str, Any], trace_id: str | None = None) -> None:
+        self._record = record
+        self.trace_id = trace_id
+
+    def update(self, *, output: Any = None, metadata: dict[str, Any] | None = None) -> None:
+        self._record["output"] = output
+        self._record["metadata"] = metadata
 
 
 class InMemoryTransport:

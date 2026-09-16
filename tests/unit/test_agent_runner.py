@@ -30,13 +30,14 @@ from agent.runner import (
     ToolStarted,
 )
 from agent.tools import BUDGET_EXHAUSTED, AgentTools
+from agent.tracing import Tracing
 from common.config import DEFAULT_CONFIG_PATH, AppConfig, LlmRole, load_app_config
 from mcp_server.cards import CardServiceClient
 from mcp_server.content import DocumentReader
 from mcp_server.glossary import EmptyGlossary
 from mcp_server.server import Services, build_server
 from tessa_export.fake import link, make_snapshot, stable_uuid
-from tests.unit.agent_fakes import InMemoryTransport, ScriptedLLM, tool_step
+from tests.unit.agent_fakes import InMemoryTransport, RecordingTracing, ScriptedLLM, tool_step
 from tests.unit.index_data import InMemoryCorpus, standard_corpus
 
 CONFIG = load_app_config(DEFAULT_CONFIG_PATH)
@@ -60,6 +61,7 @@ class Harness:
         rewrite_steps: list[str] | None = None,
         summary_steps: list[str] | None = None,
         config: AppConfig = CONFIG,
+        tracing: Tracing | None = None,
     ) -> AgentRunner:
         self.llms = {
             "tool_loop": ScriptedLLM(steps=loop_steps),
@@ -72,7 +74,7 @@ class Harness:
         def factory(role: LlmRole) -> ScriptedLLM:
             return self.llms[role]
 
-        return AgentRunner(config, self.tools, factory, today=lambda: TODAY)
+        return AgentRunner(config, self.tools, factory, tracing=tracing, today=lambda: TODAY)
 
     def session(self, config: AppConfig = CONFIG) -> AgentSession:
         return AgentSession(config)
@@ -88,7 +90,7 @@ def _card_server(cards: dict[UUID, dict[str, Any]]) -> Any:
     return serve
 
 
-@pytest.fixture
+@pytest.fixture(name="harness")  # имя явно: фикстуру импортирует и живой тест трейсинга
 async def harness() -> AsyncIterator[Harness]:
     corpus = standard_corpus()
     order_id = UUID(corpus.docs["order_144"])
@@ -378,3 +380,57 @@ async def test_old_turns_are_compacted_after_the_answer(harness: Harness) -> Non
     rewrite_input = str(harness.llms["rewrite"].inputs[0][1].content)
     assert "Сводка предыдущего диалога: Сводка: обсуждали первый вопрос." in rewrite_input
     assert "Пользователь: Второй вопрос?" in rewrite_input
+
+
+async def test_question_is_traced_as_rewrite_loop_and_answer_steps(harness: Harness) -> None:
+    """FR-8 / AC-8.1: трейс вопроса содержит цепочку переписывание → цикл инструментов → ответ."""
+    tracing = RecordingTracing()
+    runner = harness.runner(
+        [tool_step(TOOL_SEARCH, query=QUERY), "Заметки: D1."],
+        ["Отчёт сдаётся до пятого числа [S1]."],
+        rewrite_steps=['{"query": "срок сдачи отчёта по охране труда", "needs_search": true}'],
+        tracing=tracing,
+    )
+    session = harness.session()
+    answer = await runner.ask("Когда сдаётся отчёт?", session)
+    assert answer.trace_id == "trace-1"
+    root = tracing.questions[0]
+    assert root["session_id"] == session.id and root["question"] == "Когда сдаётся отчёт?"
+    assert root["output"]["answer"] == answer.text and root["output"]["sources"] == [answer.sources[0].line()]
+    assert root["metadata"]["rewritten_query"] == "срок сдачи отчёта по охране труда"
+    assert [(step["name"], step["kind"]) for step in tracing.steps] == [
+        ("rewrite", "chain"),
+        ("tool_loop", "agent"),
+        ("answer", "chain"),
+    ]
+    rewrite, loop, compose = tracing.steps
+    assert rewrite["output"]["query"] == "срок сдачи отчёта по охране труда"
+    assert "Поисковый запрос с учётом диалога: срок сдачи отчёта" in loop["input"]
+    assert loop["output"]["tool_calls"][0]["query"] == QUERY and loop["metadata"]["search_queries"] == [QUERY]
+    assert compose["output"] == "Отчёт сдаётся до пятого числа [1]." and compose["metadata"]["sources"] == 1
+
+
+async def test_repeated_calls_and_relation_type_filter_do_not_spend_budget(harness: Harness) -> None:
+    """Живой прогон: модель перебирала типы связей и повторяла поиск — бюджет уходил впустую."""
+    runner = harness.runner(
+        [
+            tool_step(TOOL_SEARCH, query=QUERY),
+            tool_step(TOOL_RELATED, doc_id="D1", relation_type="в отмену"),
+            tool_step(TOOL_RELATED, doc_id="D1", relation_type="дополнение"),
+            tool_step(TOOL_SEARCH, query=QUERY),
+            "Заметки: всё найдено.",
+        ],
+        ["Ответ [S1]."],
+    )
+    answer = await runner.ask("Что с отчётом?", harness.session())
+    assert [call.name for call in answer.tool_calls] == [TOOL_SEARCH, TOOL_RELATED]
+    assert answer.tool_calls[1].arguments == {"doc_id": harness.order_id}, "фильтр по типу связи снят"
+    repeats = [
+        text for text in _tool_messages(harness.llms["tool_loop"]) if text.startswith("Этот вызов уже")
+    ]
+    assert len(repeats) == 2 and "Связи документа [D1]" in repeats[0] and "Найдено фрагментов" in repeats[1]
+
+
+def test_without_tracing_answer_has_no_trace_id() -> None:
+    session = AgentSession(CONFIG, session_id="dialog-1")
+    assert session.id == "dialog-1" and AgentSession(CONFIG).id

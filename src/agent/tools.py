@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from dataclasses import dataclass, field
@@ -18,7 +19,7 @@ from mcp.types import CallToolResult, TextContent, Tool
 from pydantic import BaseModel, Field
 
 from agent.evidence import EvidenceRegistry, ToolCallRecord
-from agent.rendering import TOOL_SEARCH, cut, render
+from agent.rendering import TOOL_RELATED, TOOL_SEARCH, cut, render
 from common.config import ToolOutputSettings
 
 logger = logging.getLogger(__name__)
@@ -27,6 +28,11 @@ BUDGET_EXHAUSTED = (
     "Бюджет вызовов инструментов ({limit}) исчерпан: вызов не выполнен. "
     "Заверши работу — напиши заметки для ответа по уже найденному."
 )
+REPEATED_CALL = (
+    "Этот вызов уже выполнялся с теми же аргументами; повторно инструмент не вызван (бюджет не тратится). "
+    "Прежний результат:\n{text}"
+)
+RELATION_TYPE_ARGUMENT = "relation_type"
 ERROR_SUMMARY_CHARS = 200
 
 
@@ -73,6 +79,7 @@ class ToolRun:
     budget_exhausted: bool = False
     fragment_aliases: list[str] = field(default_factory=list)
     document_aliases: list[str] = field(default_factory=list)
+    seen: dict[tuple[str, str], str] = field(default_factory=dict, repr=False)
 
     @property
     def search_queries(self) -> list[str]:
@@ -90,6 +97,10 @@ class ToolRun:
 def _clean(arguments: dict[str, Any]) -> dict[str, Any]:
     """LLM и схема подставляют null в необязательные поля — MCP их не ждёт."""
     return {key: value for key, value in arguments.items() if value is not None}
+
+
+def _call_key(name: str, arguments: dict[str, Any]) -> tuple[str, str]:
+    return name, json.dumps(arguments, ensure_ascii=False, sort_keys=True, default=str)
 
 
 class AgentTools:
@@ -133,6 +144,14 @@ class AgentTools:
             logger.info("Бюджет вызовов (%d) исчерпан, %s не вызван", run.max_calls, name)
             return BUDGET_EXHAUSTED.format(limit=run.max_calls)
         arguments = run.registry.resolve_arguments(_clean(kwargs))
+        if name == TOOL_RELATED:
+            # все связи с типами и так видны в ответе; фильтр по типу только плодил повторные вызовы
+            # (живой прогон 2026-09-16: 7 вызовов подряд с разными типами по одному документу)
+            arguments.pop(RELATION_TYPE_ARGUMENT, None)
+        key = _call_key(name, arguments)
+        if key in run.seen:
+            logger.info("Инструмент %s: повторный вызов с теми же аргументами, отдаю прежний результат", name)
+            return REPEATED_CALL.format(text=run.seen[key])
         query = str(arguments.get("query")) if name == TOOL_SEARCH and arguments.get("query") else None
         started = time.perf_counter()
         try:
@@ -165,6 +184,7 @@ class AgentTools:
             )
             return f"Ошибка инструмента {name}: {text}"
         rendered = render(name, arguments, result.structured, run.registry, run.limits)
+        run.seen[key] = rendered.text
         run.note_aliases(rendered.fragment_aliases, rendered.document_aliases)
         run.calls.append(
             ToolCallRecord(
