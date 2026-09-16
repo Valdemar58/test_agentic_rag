@@ -94,9 +94,12 @@ class QueryRewriter:
             answer_chars=self._settings.answer_chars,
             summary=summary,
         )
+        last_documents = turns[-1].document_aliases if turns else []
         messages = [
             ChatMessage(role="system", content=REWRITE_SYSTEM_PROMPT),
-            ChatMessage(role="user", content=rewrite_user_message(question, history, documents)),
+            ChatMessage(
+                role="user", content=rewrite_user_message(question, history, documents, last_documents)
+            ),
         ]
         response = await self._llm.achat(messages)
         return parse_rewrite(question, response.message.content or "", thinking_text(response.message))

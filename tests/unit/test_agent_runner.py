@@ -24,12 +24,13 @@ from agent.runner import (
     AgentRunner,
     AgentSession,
     AnswerReady,
+    CacheUsed,
     QueryRewritten,
     ToolFinished,
     ToolStarted,
 )
 from agent.tools import BUDGET_EXHAUSTED, AgentTools
-from common.config import DEFAULT_CONFIG_PATH, LlmRole, load_app_config
+from common.config import DEFAULT_CONFIG_PATH, AppConfig, LlmRole, load_app_config
 from mcp_server.cards import CardServiceClient
 from mcp_server.content import DocumentReader
 from mcp_server.glossary import EmptyGlossary
@@ -53,23 +54,28 @@ class Harness:
     llms: dict[str, ScriptedLLM]
 
     def runner(
-        self, loop_steps: list[Any], answer_steps: list[str], rewrite_steps: list[str] | None = None
+        self,
+        loop_steps: list[Any],
+        answer_steps: list[str],
+        rewrite_steps: list[str] | None = None,
+        summary_steps: list[str] | None = None,
+        config: AppConfig = CONFIG,
     ) -> AgentRunner:
         self.llms = {
             "tool_loop": ScriptedLLM(steps=loop_steps),
             "answer": ScriptedLLM(steps=answer_steps),
             # без сценария переписывание отдаёт не-JSON и поиск идёт по исходному вопросу
             "rewrite": ScriptedLLM(steps=rewrite_steps or []),
-            "summary": ScriptedLLM(),
+            "summary": ScriptedLLM(steps=summary_steps or []),
         }
 
         def factory(role: LlmRole) -> ScriptedLLM:
             return self.llms[role]
 
-        return AgentRunner(CONFIG, self.tools, factory, today=lambda: TODAY)
+        return AgentRunner(config, self.tools, factory, today=lambda: TODAY)
 
-    def session(self) -> AgentSession:
-        return AgentSession(CONFIG)
+    def session(self, config: AppConfig = CONFIG) -> AgentSession:
+        return AgentSession(config)
 
 
 def _card_server(cards: dict[UUID, dict[str, Any]]) -> Any:
@@ -311,3 +317,59 @@ async def test_message_without_search_is_answered_from_history_without_tools(har
     assert "не требует поиска" in str(system.content)
     assert "Сообщение пользователя: Привет!" in str(user.content)
     assert not harness.llms["tool_loop"].inputs
+
+
+async def test_follow_up_uses_cached_evidence_without_new_search(harness: Harness) -> None:
+    """FR-6: уточнение по уже найденному документу отвечается по кэшу сессии, поиск не повторяется."""
+    session = harness.session()
+    first = harness.runner(
+        [tool_step(TOOL_SEARCH, query=QUERY), "Заметки: нашёл D1."], ["Отчёт сдаётся до пятого числа [S1]."]
+    )
+    await first.ask("Когда сдаётся отчёт по охране труда?", session)
+    cached_fragments = [fragment.alias for fragment in session.registry.fragments_of(harness.order_id)]
+    assert cached_fragments
+
+    follow_up = harness.runner(
+        ["Заметки: ранее найденных фрагментов достаточно, S1 отвечает на вопрос."],
+        ["Да, срок — до пятого числа [S1]."],
+        rewrite_steps=[
+            '{"query": "срок сдачи отчёта по охране труда по приказу №144", "needs_search": true, '
+            '"relevant_documents": ["D1"]}'
+        ],
+    )
+    events = [event async for event in follow_up.run("а точно до пятого?", session)]
+    cache = next(event for event in events if isinstance(event, CacheUsed))
+    assert cache.document_aliases == ["D1"] and cache.fragment_aliases == cached_fragments
+    assert not any(isinstance(event, ToolStarted) for event in events)
+    ready = events[-1]
+    assert isinstance(ready, AnswerReady)
+    assert ready.answer.tool_calls == [] and ready.answer.fragment_aliases == cached_fragments
+    loop_user = str(harness.llms["tool_loop"].inputs[0][-1].content)
+    assert "Ранее найденные в этом диалоге свидетельства" in loop_user and "[S1]" in loop_user
+    assert "пятого" in loop_user
+    evidence = str(harness.llms["answer"].inputs[0][1].content)
+    assert "[S1] (D1, действует)" in evidence
+
+
+async def test_old_turns_are_compacted_after_the_answer(harness: Harness) -> None:
+    small_memory = CONFIG.agent.memory.model_copy(update={"buffer_messages": 2})
+    config = CONFIG.model_copy(update={"agent": CONFIG.agent.model_copy(update={"memory": small_memory})})
+    session = harness.session(config)
+    session.memory.add(Turn(question="Первый вопрос?", answer="Первый ответ."))
+    runner = harness.runner(
+        [tool_step(TOOL_SEARCH, query=QUERY), "Заметки."],
+        ["Ответ [S1]."],
+        summary_steps=["Сводка: обсуждали первый вопрос."],
+        config=config,
+    )
+    await runner.ask("Второй вопрос?", session)
+    assert session.memory.summary == "Сводка: обсуждали первый вопрос."
+    assert [turn.question for turn in session.memory.turns] == ["Второй вопрос?"]
+    summary_input = str(harness.llms["summary"].inputs[0][1].content)
+    assert "Пользователь: Первый вопрос?" in summary_input and "Второй вопрос?" not in summary_input
+
+    again = harness.runner([tool_step(TOOL_SEARCH, query=QUERY), "Заметки."], ["Ответ [S1]."], config=config)
+    await again.ask("Третий вопрос?", session)
+    rewrite_input = str(harness.llms["rewrite"].inputs[0][1].content)
+    assert "Сводка предыдущего диалога: Сводка: обсуждали первый вопрос." in rewrite_input
+    assert "Пользователь: Второй вопрос?" in rewrite_input

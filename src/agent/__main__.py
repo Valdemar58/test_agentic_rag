@@ -19,6 +19,7 @@ from agent.runner import (
     AgentSession,
     AnswerDelta,
     AnswerReady,
+    CacheUsed,
     LoopNotes,
     LoopText,
     QueryRewritten,
@@ -42,6 +43,8 @@ async def _ask(runner: AgentRunner, session: AgentSession, question: str) -> Non
                 print(f"≈ Запрос с учётом диалога: {event.query}", flush=True)
             if not event.needs_search:
                 print("· Поиск по документам не нужен", flush=True)
+        elif isinstance(event, CacheUsed):
+            print(f"· Использую ранее найденное: {', '.join(event.document_aliases)}", flush=True)
         elif isinstance(event, ToolStarted):
             print(f"→ {event.status}", flush=True)
         elif isinstance(event, ToolFinished):

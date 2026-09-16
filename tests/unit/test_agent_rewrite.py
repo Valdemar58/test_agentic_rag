@@ -39,7 +39,14 @@ async def test_rewriter_prompt_contains_history_and_known_documents() -> None:
     registry.register_document(
         "doc-1", label="Приказ №144 от 15.01.2026", doc_status="active", subject="Об охране"
     )
-    turns = [Turn(question="Когда сдаётся отчёт по охране труда?", answer="До пятого числа [S1]." * 200)]
+    registry.register_document("doc-2", label="Договор №Д-1", doc_status="active")
+    turns = [
+        Turn(
+            question="Когда сдаётся отчёт по охране труда?",
+            answer="До пятого числа [S1]." * 200,
+            document_aliases=["D1"],
+        )
+    ]
     rewriter = QueryRewriter(llm, CONFIG.agent.rewrite)
     result = await rewriter.rewrite(QUESTION, turns, registry.documents(), summary="Обсуждали отчётность.")
     assert result.query == "срок сдачи отчёта по охране труда для филиалов" and result.changed
@@ -49,7 +56,8 @@ async def test_rewriter_prompt_contains_history_and_known_documents() -> None:
     assert "Сводка предыдущего диалога: Обсуждали отчётность." in user_text
     assert "Пользователь: Когда сдаётся отчёт по охране труда?" in user_text
     assert "…(обрезано)" in user_text, "длинный прошлый ответ обрезан до answer_chars"
-    assert "[D1] Приказ №144 от 15.01.2026 (действует) — «Об охране»" in user_text
+    assert "[D1] Приказ №144 от 15.01.2026 (действует) — «Об охране» — в последнем ответе" in user_text
+    assert "[D2] Договор №Д-1 (действует)\n" in user_text, "документ не из последнего ответа — без пометки"
     assert user_text.endswith(f"Новый вопрос пользователя: {QUESTION}")
 
 

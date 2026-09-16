@@ -362,6 +362,39 @@ def _render_glossary(data: dict[str, Any]) -> Rendered:
     return Rendered(text="\n".join(lines), summary=summary)
 
 
+# ---------- свидетельства из кэша сессии для уточняющего вопроса (FR-6) ----------
+
+
+def render_cached_evidence(
+    registry: EvidenceRegistry, document_aliases: list[str], limit_chars: int
+) -> tuple[str, list[str], list[str]]:
+    """Фрагменты уже найденных документов для цикла: (текст, псевдонимы фрагментов, псевдонимы документов)."""
+    lines: list[str] = []
+    fragments: list[str] = []
+    documents: list[str] = []
+    used = 0
+    for alias in _unique(document_aliases):
+        document = registry.document_by_alias(alias)
+        if document is None:
+            continue
+        header = f"[{document.alias}] {document.label or FALLBACK_LABEL} ({document.status})"
+        if used + len(header) > limit_chars and documents:
+            break
+        lines.append(header)
+        documents.append(document.alias)
+        used += len(header)
+        registry.touch(document.doc_id)
+        for fragment in registry.fragments_of(document.doc_id):
+            block = f"  [{fragment.alias}] {fragment.breadcrumbs}\n  {fragment.text}"
+            if used + len(block) > limit_chars:
+                lines.append("  (остальные фрагменты не показаны)")
+                break
+            lines.append(block)
+            fragments.append(fragment.alias)
+            used += len(block)
+    return "\n".join(lines), fragments, documents
+
+
 # ---------- свидетельства для итогового ответа ----------
 
 

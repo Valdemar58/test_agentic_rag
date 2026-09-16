@@ -347,10 +347,16 @@ class LlmRequestOptions(StrictModel):
 
 
 class MemorySettings(StrictModel):
-    buffer_messages: int = Field(gt=0, description="Сколько последних сообщений передаётся агенту")
-    summary_trigger_tokens: int = Field(
-        gt=0, description="Порог, после которого старые сообщения суммаризируются"
+    buffer_messages: int = Field(gt=0, description="Сколько последних сообщений (ход = 2) хранится дословно")
+    summary_trigger_chars: int = Field(
+        gt=0, description="Суммарный объём ходов, после которого старые ходы сжимаются в сводку"
     )
+    summary_max_words: int = Field(gt=0, description="Предел длины сводки для промпта суммаризации")
+
+    @property
+    def buffer_turns(self) -> int:
+        """Сколько последних ходов «вопрос — ответ» хранится дословно (не меньше одного)."""
+        return max(1, self.buffer_messages // 2)
 
 
 class RewriteSettings(StrictModel):
@@ -387,6 +393,9 @@ class AgentSettings(StrictModel):
     answer: AnswerSettings
     memory: MemorySettings
     session_document_cache: int = Field(ge=0, description="Кэш найденных документов в сессии (FR-6)")
+    cached_evidence_chars: int = Field(
+        ge=0, description="Сколько символов свидетельств из кэша сессии подаётся в цикл при уточнении"
+    )
     rewrite: RewriteSettings
 
     def llm_options(self, role: LlmRole) -> LlmRequestOptions:

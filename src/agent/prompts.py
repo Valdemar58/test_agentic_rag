@@ -18,15 +18,18 @@ LOOP_SYSTEM_PROMPT = """\
 пользователя, а затем написать короткие заметки для ответа. Сам развёрнутый ответ пишет другой шаг.
 
 Как работать:
-1. Начинай с hybrid_search: запрос — ключевые слова вопроса по-русски, без лишних слов. Если нашлось мало \
-или не то — переформулируй (синонимы, другие термины, уже, шире) или задай фильтры. Для вопросов про \
-несколько документов, изменения, отмены и противоречия делай несколько разных поисков.
+1. Начинай с hybrid_search. Первый запрос — поисковый запрос из сообщения (если он есть) или ключевые слова \
+вопроса по-русски; не подменяй предмет вопроса более общим. Если нашлось мало или не то — переформулируй \
+(синонимы, другие термины, уже, шире) или задай фильтры. Для вопросов про несколько документов, изменения, \
+отмены и противоречия делай несколько разных поисков.
 2. Документы и фрагменты в результатах помечены псевдонимами: D1, D2 — документы, S1, S2 — фрагменты. \
 В аргументах инструментов используй именно псевдонимы: doc_id="D1", section_id="S3". Никогда не придумывай \
 идентификаторы.
 3. Проверяй актуальность. По умолчанию поиск отдаёт только действующие документы; статус указан у каждого. \
 Если вопрос про отменённые документы, историю изменений или «каким приказом отменено» — ищи со \
-statuses=["cancelled"] и смотри связи через get_related_documents.
+statuses=["cancelled"] и смотри связи через get_related_documents. Связи запрашивай один раз без \
+relation_type: инструмент вернёт все связи документа с типами; отменённые документы в тексте приказа могут \
+отсутствовать в СЭД — тогда достаточно фрагмента текста.
 4. Если фрагмента мало для ответа — дочитай раздел (get_document_content с section_id=S#) или документ \
 целиком (без section_id).
 5. Реквизиты, статус, согласующих, ответственных, срок действия — get_document_card. Значение \
@@ -90,7 +93,9 @@ REWRITE_SYSTEM_PROMPT = """\
 - Самостоятельный вопрос оставь по смыслу как есть, лишь убрав обращения и лишние слова.
 - Сохраняй термины, номера документов и аббревиатуры пользователя; аббревиатуры и внутренние термины \
 перечисли в abbreviations.
-- Если вопрос относится к уже найденным документам из списка, перечисли их псевдонимы в relevant_documents.
+- Если вопрос относится к уже найденным документам из списка, перечисли их псевдонимы в relevant_documents. \
+Уточнение к предыдущему ответу («а какие приказы он отменил?», «а кто его подписал?») почти всегда относится \
+к документам, помеченным «в последнем ответе», — укажи их.
 - needs_search = false только если поиск по документам не нужен: приветствие, благодарность, вопрос о \
 возможностях ассистента, просьба переформулировать, сократить или пояснить предыдущий ответ.
 
@@ -131,6 +136,30 @@ LOOP_USER_TEMPLATE = """\
 Поисковый запрос с учётом диалога: {query}\
 """
 
+CACHED_EVIDENCE_TEMPLATE = """\
+{message}
+
+Ранее найденные в этом диалоге свидетельства по тем же документам (псевдонимы действительны):
+{evidence}
+Если их достаточно для ответа — не вызывай инструменты и сразу напиши заметки; если нет — ищи или дочитывай.\
+"""
+
+SUMMARY_SYSTEM_PROMPT = """\
+Ты сжимаешь историю диалога пользователя с помощником по документам СЭД в короткую сводку по-русски \
+(не длиннее {max_words} слов). Сохрани: о чём спрашивали, какие документы нашлись (вид, номер, дата, \
+статус), какие выводы дал помощник, что осталось неясным. Не выдумывай и не добавляй оценок. Ответь только \
+текстом сводки.\
+"""
+
+SUMMARY_USER_TEMPLATE = """\
+Предыдущая сводка:
+{summary}
+
+Ходы диалога, которые нужно добавить в сводку:
+{history}\
+"""
+NO_SUMMARY = "(сводки ещё нет)"
+
 
 def loop_system_prompt(max_tool_calls: int, today: str) -> str:
     return LOOP_SYSTEM_PROMPT.format(max_tool_calls=max_tool_calls, today=today)
@@ -143,10 +172,16 @@ def loop_user_message(question: str, query: str) -> str:
     return LOOP_USER_TEMPLATE.format(question=question, query=query)
 
 
-def rewrite_user_message(question: str, history: str, documents: Sequence[KnownDocument]) -> str:
+LAST_ANSWER_MARK = " — в последнем ответе"
+
+
+def rewrite_user_message(
+    question: str, history: str, documents: Sequence[KnownDocument], last_documents: Sequence[str] = ()
+) -> str:
     lines = [
         f"[{document.alias}] {document.label} ({document.status})"
         + (f" — «{document.subject}»" if document.subject else "")
+        + (LAST_ANSWER_MARK if document.alias in last_documents else "")
         for document in documents
     ]
     return REWRITE_USER_TEMPLATE.format(
@@ -156,6 +191,15 @@ def rewrite_user_message(question: str, history: str, documents: Sequence[KnownD
 
 def chat_user_message(question: str, history: str) -> str:
     return CHAT_USER_TEMPLATE.format(history=history, question=question)
+
+
+def with_cached_evidence(message: str, evidence: str) -> str:
+    """Сообщение цикла вместе со свидетельствами из кэша сессии (FR-6: без повторного поиска с нуля)."""
+    return CACHED_EVIDENCE_TEMPLATE.format(message=message, evidence=evidence)
+
+
+def summary_user_message(summary: str | None, history: str) -> str:
+    return SUMMARY_USER_TEMPLATE.format(summary=summary or NO_SUMMARY, history=history)
 
 
 def answer_system_prompt(*, budget_exhausted: bool) -> str:

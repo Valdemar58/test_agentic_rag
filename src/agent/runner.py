@@ -31,8 +31,9 @@ from agent.prompts import (
     chat_user_message,
     loop_system_prompt,
     loop_user_message,
+    with_cached_evidence,
 )
-from agent.rendering import render_evidence, status_text_for
+from agent.rendering import render_cached_evidence, render_evidence, status_text_for
 from agent.rewrite import QueryRewriter, RewrittenQuery
 from agent.tools import AgentTools, ToolRun
 from common.config import AppConfig, LlmRole
@@ -70,6 +71,12 @@ class QueryRewritten(AgentEvent):
     relevant_documents: list[str]
     abbreviations: list[str]
     reason: str | None
+
+
+class CacheUsed(AgentEvent):
+    kind: Literal["cache_used"] = "cache_used"
+    document_aliases: list[str] = Field(description="Документы из кэша сессии, поданные в цикл (FR-6)")
+    fragment_aliases: list[str]
 
 
 class ToolStarted(AgentEvent):
@@ -187,7 +194,16 @@ class AgentRunner:
         )
         notes = ""
         if rewritten.needs_search:
-            async for event in self._tool_loop(loop_user_message(question, rewritten.query), run):
+            user_message = loop_user_message(question, rewritten.query)
+            if rewritten.relevant_documents and agent_settings.cached_evidence_chars:
+                cached, fragments, documents = render_cached_evidence(
+                    session.registry, rewritten.relevant_documents, agent_settings.cached_evidence_chars
+                )
+                if fragments:
+                    run.note_aliases(fragments, documents)
+                    user_message = with_cached_evidence(user_message, cached)
+                    yield CacheUsed(document_aliases=documents, fragment_aliases=fragments)
+            async for event in self._tool_loop(user_message, run):
                 if isinstance(event, LoopNotes):
                     notes = event.text
                 yield event
@@ -212,7 +228,14 @@ class AgentRunner:
             text = f"{text}\n\n{BUDGET_CAVEAT}".strip()
         session.registry.trim()
         rewritten_query = rewritten.query if rewritten.changed else None
-        session.memory.add(Turn(question=question, answer=text, rewritten_query=rewritten_query))
+        session.memory.add(
+            Turn(
+                question=question,
+                answer=text,
+                rewritten_query=rewritten_query,
+                document_aliases=list(run.document_aliases),
+            )
+        )
         answer = Answer(
             question=question,
             text=text,
@@ -231,6 +254,9 @@ class AgentRunner:
             answer_seconds=time.perf_counter() - answer_started,
         )
         yield AnswerReady(answer=answer)
+        # сводка старых ходов — после выдачи ответа, чтобы не задерживать его (FR-6)
+        if session.memory.needs_compaction(agent_settings.memory):
+            await session.memory.compact(self._llms("summary"), agent_settings.memory)
 
     # ---------- переписывание запроса (FR-6) ----------
 
