@@ -92,6 +92,9 @@ class ToolRun:
     context_chars: int = 0
     fragment_aliases: list[str] = field(default_factory=list)
     document_aliases: list[str] = field(default_factory=list)
+    cached_fragment_aliases: list[str] = field(
+        default_factory=list, metadata={"doc": "Фрагменты из кэша сессии, а не из вызовов этого вопроса"}
+    )
     seen: dict[tuple[str, str], str] = field(default_factory=dict, repr=False)
 
     @property
@@ -153,6 +156,10 @@ class AgentTools:
     def names(self) -> list[str]:
         return [tool.name for tool in self._specs]
 
+    @property
+    def transport(self) -> ToolTransport:
+        return self._transport
+
     async def aclose(self) -> None:
         await self._transport.aclose()
 
@@ -160,6 +167,10 @@ class AgentTools:
         if not self._specs:
             raise RuntimeError("инструменты не загружены: вызовите load()")
         return [self._bind_one(tool, run) for tool in self._specs]
+
+    async def call(self, name: str, arguments: dict[str, Any], run: ToolRun) -> str:
+        """Вызов инструмента раннером в обход модели: те же бюджет, запись вызова и реестр свидетельств."""
+        return await self._call(name, arguments, run)
 
     def _bind_one(self, tool: Tool, run: ToolRun) -> FunctionTool:
         name = tool.name

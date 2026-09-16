@@ -138,7 +138,7 @@ async def test_rewrite_step_titles_for_chat_mode_and_sub_queries(harness: Harnes
     chat = harness.runner(
         [],
         ["Здравствуйте! Спрашивайте о документах."],
-        rewrite_steps=['{"query": "привет", "needs_search": false}'],
+        rewrite_steps=['{"query": "привет", "intent": "greeting"}'],
     )
     events = [event async for event in run_question(chat, harness.session(), "привет")]
     assert _finished(events, REWRITE_KEY).title == NO_SEARCH_TITLE

@@ -16,13 +16,33 @@ QUESTION = "а для филиалов?"
 def test_parse_takes_json_from_text_and_filters_aliases() -> None:
     text = (
         "Вот запрос:\n"
-        '{"query": "требования к СИЗ для филиалов", "needs_search": true, '
+        '{"query": "требования к СИЗ для филиалов", "intent": "documents", '
         '"relevant_documents": ["D1", "S3", "не псевдоним"], "abbreviations": ["СИЗ"], "reason": "уточнение"}'
     )
     result = parse_rewrite(QUESTION, text, thinking="думал")
     assert result.query == "требования к СИЗ для филиалов" and result.changed
-    assert result.needs_search and result.relevant_documents == ["D1"] and result.abbreviations == ["СИЗ"]
+    assert result.intent == "documents" and result.needs_search
+    assert result.relevant_documents == ["D1"] and result.abbreviations == ["СИЗ"]
     assert result.reason == "уточнение" and result.thinking == "думал" and result.queries == []
+
+
+def test_only_named_intents_skip_search_and_rephrase_needs_history() -> None:
+    """Живой диалог 2026-09-16: бытовой вопрос ушёл в режим беседы. Свободного флага у модели больше нет."""
+    greeting = parse_rewrite("Привет!", '{"query": "привет", "intent": "greeting"}', has_history=False)
+    assert greeting.intent == "greeting" and not greeting.needs_search
+    capabilities = parse_rewrite("Что умеешь?", '{"query": "что умеешь", "intent": "capabilities"}')
+    assert not capabilities.needs_search
+    rephrase = parse_rewrite("Короче", '{"query": "короче", "intent": "rephrase"}', has_history=True)
+    assert rephrase.intent == "rephrase" and not rephrase.needs_search
+    first_message = parse_rewrite("Короче", '{"query": "короче", "intent": "rephrase"}', has_history=False)
+    assert first_message.intent == "documents" and first_message.needs_search, "переформулировать нечего"
+    unknown = parse_rewrite(QUESTION, '{"query": "обед", "intent": "chit-chat"}', has_history=False)
+    assert unknown.intent == "documents" and unknown.needs_search
+    # устаревший флаг прежнего формата: без истории — поиск, с историей — переформулировка
+    legacy = parse_rewrite(QUESTION, '{"query": "обед", "needs_search": false}', has_history=False)
+    assert legacy.intent == "documents"
+    assert parse_rewrite(QUESTION, '{"query": "обед", "needs_search": false}').intent == "rephrase"
+    assert parse_rewrite(QUESTION, '{"query": "обед"}', has_history=False).intent == "documents"
 
 
 def test_parse_keeps_several_sub_queries_and_loop_message_lists_them() -> None:
@@ -72,7 +92,7 @@ async def test_rewriter_prompt_contains_history_and_known_documents() -> None:
     result = await rewriter.rewrite(QUESTION, turns, registry.documents(), summary="Обсуждали отчётность.")
     assert result.query == "срок сдачи отчёта по охране труда для филиалов" and result.changed
     system, user = llm.inputs[0]
-    assert "JSON" in str(system.content) and "needs_search" in str(system.content)
+    assert "JSON" in str(system.content) and '"intent"' in str(system.content)
     user_text = str(user.content)
     assert "Сводка предыдущего диалога: Обсуждали отчётность." in user_text
     assert "Пользователь: Когда сдаётся отчёт по охране труда?" in user_text

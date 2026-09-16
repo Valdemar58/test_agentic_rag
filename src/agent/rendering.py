@@ -9,10 +9,11 @@ from __future__ import annotations
 import datetime as dt
 import json
 import re
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from typing import Any
 
-from agent.evidence import EvidenceRegistry, status_text
+from agent.evidence import EvidenceRegistry, Fragment, status_text
 from common.config import AnswerSettings, ToolOutputSettings
 from ingest.metadata import document_label
 
@@ -28,6 +29,10 @@ CUT_MARK = " …(обрезано)"
 GUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 FALLBACK_LABEL = "документ"
 NO_EVIDENCE = "(свидетельств нет: инструменты ничего не нашли)"
+NO_CARD_NOTE = "; карточка не запрашивалась: автор, подписант, согласующие и срок действия неизвестны"
+EVIDENCE_OVERFLOW_NOTE = "(остальные фрагменты не поместились в бюджет ответа)"
+# короче этого остатка фрагмент не обрезается, а не показывается: обрывок без смысла только мешает
+MIN_EVIDENCE_BLOCK_CHARS = 400
 
 
 @dataclass(frozen=True)
@@ -398,13 +403,28 @@ def render_cached_evidence(
 # ---------- свидетельства для итогового ответа ----------
 
 
+def _evidence_order(fragment: Fragment, cached: Collection[str]) -> int:
+    """Прочитанные разделы — первыми, свежие фрагменты поиска — за ними, кэш прошлых ходов — последним.
+
+    Живой диалог 2026-09-16: раздел с перечнем должностей, ради которого модель и читала документ,
+    шёл последним и целиком выпал из бюджета ответа; перечень остался без ссылки."""
+    if fragment.kind == "section":
+        return 0
+    return 2 if fragment.alias in cached else 1
+
+
 def render_evidence(
     registry: EvidenceRegistry,
     fragment_aliases: list[str],
     document_aliases: list[str],
     settings: AnswerSettings,
+    *,
+    cached_aliases: Collection[str] = (),
 ) -> str:
-    """Документы и фрагменты прогона для промпта итогового ответа, в бюджете `evidence_max_chars`."""
+    """Документы и фрагменты прогона для промпта итогового ответа, в бюджете `evidence_max_chars`.
+
+    Контекст раздела показывается один раз на раздел и не показывается, если сам раздел уже среди
+    свидетельств; фрагмент, не влезающий в остаток бюджета, обрезается, а не выбрасывается."""
     if not fragment_aliases and not document_aliases:
         return NO_EVIDENCE
     lines = ["Документы (факты карточки цитируй ссылкой на документ, например [D1]):"]
@@ -422,28 +442,39 @@ def render_evidence(
             line += f"; тема: «{document.subject}»"
         if document.department:
             line += f"; подразделение: {document.department}"
+        line += NO_CARD_NOTE
         lines.append(line)
         for relation in document.relations[:8]:
             lines.append(f"    связь: {relation}")
     lines.append("Фрагменты:")
     used = sum(len(line) for line in lines)
+    fragments = [
+        fragment
+        for alias in _unique(fragment_aliases)
+        if (fragment := registry.fragment_by_alias(alias)) is not None
+    ]
+    fragments.sort(key=lambda item: _evidence_order(item, cached_aliases))
+    shown_sections = {fragment.chunk_id for fragment in fragments if fragment.kind == "section"}
     shown = 0
-    for alias in _unique(fragment_aliases):
-        fragment = registry.fragment_by_alias(alias)
-        if fragment is None:
-            continue
+    for fragment in fragments:
         document = registry.document(fragment.doc_id)
         status = document.status if document else status_text(None)
         page = f", стр. {fragment.page_no}" if fragment.page_no else ""
         head = f"[{fragment.alias}] ({fragment.doc_alias}, {status}{page}) {fragment.breadcrumbs}"
         block = f"{head}\n{fragment.text}"
+        parent = fragment.parent_id
         if fragment.kind == "hit" and fragment.context and settings.context_chars:
             context = fragment.context.strip()
-            if context and context != fragment.text.strip():
+            if context and context != fragment.text.strip() and parent not in shown_sections:
                 block += "\n  Контекст раздела: " + cut(context, settings.context_chars)
-        if used + len(block) > settings.evidence_max_chars and shown:
-            lines.append("(остальные фрагменты не поместились в бюджет ответа)")
-            break
+                if parent:
+                    shown_sections.add(parent)
+        remaining = settings.evidence_max_chars - used
+        if len(block) > remaining and shown:
+            if remaining < MIN_EVIDENCE_BLOCK_CHARS:
+                lines.append(EVIDENCE_OVERFLOW_NOTE)
+                break
+            block = cut(block, remaining)
         lines.append(block)
         used += len(block)
         shown += 1

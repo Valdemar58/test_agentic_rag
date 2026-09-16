@@ -28,15 +28,18 @@ from agent.memory import ConversationMemory, Turn, render_history
 from agent.prompts import (
     BUDGET_CAVEAT,
     CHAT_SYSTEM_PROMPT,
+    FORCED_SEARCH_NOTE,
     NO_ANSWER_PHRASE,
+    NO_HITS_NOTES,
     answer_system_prompt,
     answer_user_message,
     chat_user_message,
     loop_system_prompt,
     loop_user_message,
     with_cached_evidence,
+    with_forced_search,
 )
-from agent.rendering import render_cached_evidence, render_evidence, status_text_for
+from agent.rendering import TOOL_SEARCH, cut, render_cached_evidence, render_evidence, status_text_for
 from agent.rewrite import QueryRewriter, RewrittenQuery
 from agent.tools import AgentTools, ToolRun
 from agent.tracing import NoopTracing, QuestionHandle, Tracing
@@ -210,7 +213,7 @@ class AgentRunner:
         with self._tracing.step(
             "rewrite", kind="chain", input={"question": question, "turns": len(session.memory.turns)}
         ) as step:
-            rewritten = await self._rewrite(question, session)
+            rewritten = await self.rewrite(question, session)
             step.update(
                 output=rewritten.model_dump(exclude={"thinking"}), metadata={"thinking": rewritten.thinking}
             )
@@ -232,23 +235,31 @@ class AgentRunner:
         notes = ""
         if rewritten.needs_search:
             user_message = loop_user_message(question, rewritten.query, rewritten.queries)
+            cache_used = False
             if rewritten.relevant_documents and agent_settings.cached_evidence_chars:
                 cached, fragments, documents = render_cached_evidence(
                     session.registry, rewritten.relevant_documents, agent_settings.cached_evidence_chars
                 )
                 if fragments:
                     run.note_aliases(fragments, documents)
+                    run.cached_fragment_aliases = list(fragments)
                     user_message = with_cached_evidence(user_message, run.consume_context(cached))
+                    cache_used = True
                     yield CacheUsed(document_aliases=documents, fragment_aliases=fragments)
-            with self._tracing.step("tool_loop", kind="agent", input=user_message) as step:
-                async for event in self._tool_loop(user_message, run):
+            async for event in self._traced_loop(user_message, run):
+                if isinstance(event, LoopNotes):
+                    notes = event.text  # заметки выдаются после ограждения: оно может их заменить
+                    continue
+                yield event
+            if not cache_used and not run.search_queries and not run.exhausted:
+                # ограждение FR-1: модель закончила без единого поиска (живой диалог 2026-09-16: бытовой
+                # вопрос про обед) — ищем сами по запросу и по вопросу, модель дочитывает и пишет заметки
+                async for event in self._forced_search(question, rewritten.query, user_message, run):
                     if isinstance(event, LoopNotes):
                         notes = event.text
+                        continue
                     yield event
-                step.update(
-                    output={"notes": notes, "tool_calls": [call.model_dump() for call in run.calls]},
-                    metadata={"budget_exhausted": run.budget_exhausted, "search_queries": run.search_queries},
-                )
+            yield LoopNotes(text=notes)
         loop_seconds = time.perf_counter() - started
 
         answer_started = time.perf_counter()
@@ -339,7 +350,8 @@ class AgentRunner:
 
     # ---------- переписывание запроса (FR-6) ----------
 
-    async def _rewrite(self, question: str, session: AgentSession) -> RewrittenQuery:
+    async def rewrite(self, question: str, session: AgentSession) -> RewrittenQuery:
+        """Только развилка и переписывание запроса, без поиска и ответа (проверки маршрутизации)."""
         rewriter = QueryRewriter(self._llms("rewrite"), self._config.agent.rewrite)
         return await rewriter.rewrite(
             question, session.memory.turns, session.registry.documents(), session.memory.summary
@@ -354,6 +366,64 @@ class AgentRunner:
         )
 
     # ---------- цикл инструментов ----------
+
+    async def _traced_loop(self, user_message: str, run: ToolRun) -> AsyncIterator[AgentEvent]:
+        """Цикл инструментов как шаг трейса: заметки и вызовы — в выходе шага."""
+        notes = ""
+        calls_before = len(run.calls)
+        with self._tracing.step("tool_loop", kind="agent", input=user_message) as step:
+            async for event in self._tool_loop(user_message, run):
+                if isinstance(event, LoopNotes):
+                    notes = event.text
+                yield event
+            calls = [call.model_dump() for call in run.calls[calls_before:]]
+            step.update(
+                output={"notes": notes, "tool_calls": calls},
+                metadata={"budget_exhausted": run.budget_exhausted, "search_queries": run.search_queries},
+            )
+
+    async def _forced_search(
+        self, question: str, query: str, user_message: str, run: ToolRun
+    ) -> AsyncIterator[AgentEvent]:
+        """Поиск за модель, если цикл закончился без единого hybrid_search (ограждение FR-1).
+
+        Ищем по переписанному запросу и по исходному вопросу; если что-то нашлось — цикл запускается
+        ещё раз с результатами в сообщении, чтобы модель дочитала и написала заметки. Без находок
+        заметки говорят об этом прямо, и ответ становится честным отказом."""
+        yield LoopText(text=FORCED_SEARCH_NOTE)
+        queries: list[str] = []
+        for candidate in (query, question):
+            if candidate.casefold() not in [item.casefold() for item in queries]:
+                queries.append(candidate)
+        results: list[str] = []
+        first_call = len(run.calls)
+        with self._tracing.step("forced_search", kind="tool", input={"queries": queries}) as step:
+            for item in queries:
+                arguments = {"query": item}
+                yield ToolStarted(
+                    tool=TOOL_SEARCH,
+                    arguments=arguments,
+                    status=status_text_for(TOOL_SEARCH, arguments, run.registry),
+                )
+                before = len(run.calls)
+                text = await self._tools.call(TOOL_SEARCH, arguments, run)
+                record = run.calls[-1] if len(run.calls) > before else None
+                if record is None:
+                    # бюджет или контекст исчерпаны: вызов не выполнен, текст объясняет причину
+                    yield ToolFinished(tool=TOOL_SEARCH, summary=cut(text, 120), ok=False, seconds=0.0)
+                    continue
+                yield ToolFinished(
+                    tool=TOOL_SEARCH, summary=record.summary, ok=record.ok, seconds=record.seconds
+                )
+                if record.ok:
+                    results.append(text)
+            found = [alias for record in run.calls[first_call:] for alias in record.fragment_aliases]
+            step.update(output={"fragments": found})
+        if not found:
+            yield LoopNotes(text=NO_HITS_NOTES)
+            return
+        async for event in self._traced_loop(with_forced_search(user_message, results), run):
+            yield event
 
     async def _tool_loop(self, user_message: str, run: ToolRun) -> AsyncIterator[AgentEvent]:
         agent_settings = self._config.agent
@@ -416,7 +486,11 @@ class AgentRunner:
     ) -> AsyncIterator[tuple[str, ChatMessage | None]]:
         """Стрим итогового ответа: (дельта, None) по ходу и ("", сообщение) в конце."""
         evidence = render_evidence(
-            run.registry, run.fragment_aliases, run.document_aliases, self._config.agent.answer
+            run.registry,
+            run.fragment_aliases,
+            run.document_aliases,
+            self._config.agent.answer,
+            cached_aliases=run.cached_fragment_aliases,
         )
         messages = [
             ChatMessage(role="system", content=answer_system_prompt(budget_exhausted=run.budget_exhausted)),

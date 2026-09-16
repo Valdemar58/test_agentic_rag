@@ -15,22 +15,31 @@ from uuid import UUID
 import httpx
 import pytest
 import respx
+from mcp.types import Tool
 from openai import APIStatusError
 
 from agent.evidence import EvidenceRegistry
 from agent.memory import Turn
-from agent.prompts import BUDGET_CAVEAT, NO_ANSWER_PHRASE
+from agent.prompts import BUDGET_CAVEAT, FORCED_SEARCH_NOTE, NO_ANSWER_PHRASE, NO_HITS_NOTES
 from agent.rendering import CUT_MARK, TOOL_CARD, TOOL_CONTENT, TOOL_RELATED, TOOL_SEARCH
 from agent.runner import (
     AgentRunner,
     AgentSession,
     AnswerReady,
     CacheUsed,
+    LoopText,
     QueryRewritten,
     ToolFinished,
     ToolStarted,
 )
-from agent.tools import BUDGET_EXHAUSTED, CONTEXT_EXHAUSTED, CONTEXT_TIGHT, AgentTools
+from agent.tools import (
+    BUDGET_EXHAUSTED,
+    CONTEXT_EXHAUSTED,
+    CONTEXT_TIGHT,
+    AgentTools,
+    ToolResultData,
+    ToolTransport,
+)
 from agent.tracing import Tracing
 from common.config import DEFAULT_CONFIG_PATH, AppConfig, LlmRole, load_app_config
 from mcp_server.cards import CardServiceClient
@@ -312,7 +321,7 @@ async def test_message_without_search_is_answered_from_history_without_tools(har
     runner = harness.runner(
         [tool_step(TOOL_SEARCH, query="не должно вызываться")],
         ["Здравствуйте! Я ищу ответы в приказах и договорах организации. Задайте вопрос."],
-        rewrite_steps=['{"query": "привет", "needs_search": false, "reason": "приветствие"}'],
+        rewrite_steps=['{"query": "привет", "intent": "greeting", "reason": "приветствие"}'],
     )
     events = [event async for event in runner.run("Привет!", harness.session())]
     assert not any(isinstance(event, ToolStarted) for event in events)
@@ -477,3 +486,85 @@ async def test_model_error_in_loop_does_not_lose_the_answer(harness: Harness) ->
 def test_without_tracing_answer_has_no_trace_id() -> None:
     session = AgentSession(CONFIG, session_id="dialog-1")
     assert session.id == "dialog-1" and AgentSession(CONFIG).id
+
+
+async def test_loop_without_search_gets_forced_search_and_second_pass(harness: Harness) -> None:
+    """Живой диалог 2026-09-16: цикл закончил без единого поиска и написал «ничего не найдено».
+
+    Раннер ищет сам по переписанному запросу и по вопросу, затем запускает цикл ещё раз с результатами."""
+    tracing = RecordingTracing()
+    question = "Когда сдаётся отчёт?"
+    runner = harness.runner(
+        ["Вопрос не содержит ключевых слов документов СЭД.", "Заметки: S1 отвечает на вопрос."],
+        ["Отчёт сдаётся до пятого числа [S1]."],
+        rewrite_steps=[f'{{"query": "{QUERY}", "intent": "documents"}}'],
+        tracing=tracing,
+    )
+    events = [event async for event in runner.run(question, harness.session())]
+    kinds = [event.kind for event in events]
+    assert kinds == [
+        "run_started",
+        "query_rewritten",
+        "loop_text",
+        "tool_started",
+        "tool_finished",
+        "tool_started",
+        "tool_finished",
+        "loop_notes",
+        "answer_delta",
+        "answer_ready",
+    ]
+    note = events[2]
+    assert isinstance(note, LoopText) and note.text == FORCED_SEARCH_NOTE
+    started = [event for event in events if isinstance(event, ToolStarted)]
+    assert [event.status for event in started] == [f"Ищу: «{QUERY}»", f"Ищу: «{question}»"]
+    ready = events[-1]
+    assert isinstance(ready, AnswerReady)
+    answer = ready.answer
+    assert answer.search_queries == [QUERY, question] and all(call.ok for call in answer.tool_calls)
+    assert answer.notes == "Заметки: S1 отвечает на вопрос." and not answer.refused
+    assert answer.sources and answer.sources[0].alias == "S1"
+    # второй проход цикла получил результаты поиска в сообщении, а не в истории вызовов
+    second_pass = str(harness.llms["tool_loop"].inputs[1][-1].content)
+    assert "поиск выполнен за тебя" in second_pass and "Найдено фрагментов:" in second_pass
+    assert "[S1] D1 Приказ №144" in second_pass
+    assert [step["name"] for step in tracing.steps] == [
+        "rewrite",
+        "tool_loop",
+        "forced_search",
+        "tool_loop",
+        "answer",
+    ]
+    assert tracing.steps[2]["output"]["fragments"][0] == "S1"
+
+
+class _EmptySearch:
+    """Транспорт, у которого поиск ничего не находит: гибридный поиск без порога всегда отдаёт top_k."""
+
+    def __init__(self, inner: ToolTransport) -> None:
+        self._inner = inner
+
+    async def list_tools(self) -> list[Tool]:
+        return await self._inner.list_tools()
+
+    async def call_tool(self, name: str, arguments: dict[str, Any]) -> ToolResultData:
+        if name == TOOL_SEARCH:
+            return ToolResultData(is_error=False, text="", structured={"hits": [], "candidates": 0})
+        return await self._inner.call_tool(name, arguments)
+
+    async def aclose(self) -> None:
+        await self._inner.aclose()
+
+
+async def test_forced_search_without_hits_leads_to_honest_refusal(harness: Harness) -> None:
+    harness.tools = AgentTools(_EmptySearch(harness.tools.transport))
+    await harness.tools.load()
+    runner = harness.runner(
+        ["Заметки: не про документы."],
+        [f"{NO_ANSWER_PHRASE}. Искали правила парковки велосипедов."],
+    )
+    answer = await runner.ask("Где парковать велосипед?", harness.session())
+    assert [call.name for call in answer.tool_calls] == [TOOL_SEARCH], "запрос совпал с вопросом: один поиск"
+    assert answer.tool_calls[0].ok and answer.fragment_aliases == []
+    assert answer.notes == NO_HITS_NOTES and answer.refused
+    assert len(harness.llms["tool_loop"].inputs) == 1, "без находок второй проход цикла не нужен"

@@ -1,11 +1,15 @@
 """Переписывание запроса (6.3, FR-6): уточняющий вопрос + история → самодостаточный поисковый запрос.
 
 LLM роли `rewrite` (с размышлениями, N9) получает историю диалога, известные документы сессии и новый
-вопрос и отвечает JSON: `query` — самодостаточный запрос для поиска; `needs_search` — нужен ли поиск
-вообще (приветствие, просьба переформулировать прошлый ответ); `relevant_documents` — псевдонимы уже
-найденных документов, к которым относится вопрос (кэш сессии, 6.4); `abbreviations` — аббревиатуры для
-расшифровки (глоссарий, этап 8). Ответ разбирается устойчиво: JSON ищется в тексте, при провале
-поиск идёт по исходному вопросу.
+вопрос и отвечает JSON: `query` — самодостаточный запрос для поиска; `intent` — намерение из закрытого
+списка (вопрос к документам, приветствие, вопрос о возможностях, просьба переформулировать прошлый
+ответ); `relevant_documents` — псевдонимы уже найденных документов, к которым относится вопрос (кэш
+сессии, 6.4); `abbreviations` — аббревиатуры для расшифровки (глоссарий, этап 8). Ответ разбирается
+устойчиво: JSON ищется в тексте, при провале поиск идёт по исходному вопросу.
+
+Без поиска обрабатываются только три названных намерения, причём переформулировка — лишь при непустой
+истории: свободного флага «поиск не нужен» у модели нет (живой диалог 2026-09-16: бытовой вопрос «во
+сколько вернуться с обеда» ушёл в режим беседы и получил выдуманный отказ без единого поиска).
 """
 
 from __future__ import annotations
@@ -14,6 +18,7 @@ import json
 import logging
 import re
 from collections.abc import Sequence
+from typing import Literal, cast, get_args
 
 from llama_index.core.llms import LLM, ChatMessage
 from pydantic import BaseModel, Field, ValidationError
@@ -31,6 +36,11 @@ FALLBACK_REASON = "ответ модели не разобран, поиск п�
 # больше отдельных запросов не имеет смысла при бюджете в 8 вызовов (FR-1)
 MAX_QUERIES = 4
 
+Intent = Literal["documents", "greeting", "capabilities", "rephrase"]
+INTENT_DOCUMENTS: Intent = "documents"
+INTENT_REPHRASE: Intent = "rephrase"
+INTENTS: tuple[str, ...] = get_args(Intent)
+
 
 class RewrittenQuery(BaseModel):
     question: str
@@ -38,15 +48,35 @@ class RewrittenQuery(BaseModel):
     queries: list[str] = Field(
         default_factory=list, description="Отдельные поисковые запросы для многочастного вопроса (AC-1.1)"
     )
-    needs_search: bool = True
+    intent: Intent = Field(
+        default=INTENT_DOCUMENTS,
+        description="Намерение: только greeting, capabilities и rephrase обходятся без поиска",
+    )
     relevant_documents: list[str] = Field(default_factory=list, description="Псевдонимы документов сессии")
     abbreviations: list[str] = Field(default_factory=list, description="Аббревиатуры для глоссария")
     reason: str | None = None
     thinking: str | None = None
 
     @property
+    def needs_search(self) -> bool:
+        return self.intent == INTENT_DOCUMENTS
+
+    @property
     def changed(self) -> bool:
         return " ".join(self.query.split()).casefold() != " ".join(self.question.split()).casefold()
+
+
+def resolve_intent(data: dict[str, object], *, has_history: bool) -> Intent:
+    """Намерение из ответа модели; неизвестное или устаревший флаг needs_search — вопрос к документам.
+
+    Переформулировать нечего, если история пуста: такое намерение тоже становится вопросом к документам."""
+    raw = str(data.get("intent") or "").strip().casefold()
+    if raw not in INTENTS:
+        raw = INTENT_DOCUMENTS if data.get("needs_search", True) else INTENT_REPHRASE
+    intent = cast(Intent, raw)
+    if intent == INTENT_REPHRASE and not has_history:
+        return INTENT_DOCUMENTS
+    return intent
 
 
 def _strings(value: object) -> list[str]:
@@ -55,7 +85,9 @@ def _strings(value: object) -> list[str]:
     return [" ".join(str(item).split()) for item in value if str(item).strip()]
 
 
-def parse_rewrite(question: str, text: str, thinking: str | None = None) -> RewrittenQuery:
+def parse_rewrite(
+    question: str, text: str, thinking: str | None = None, *, has_history: bool = True
+) -> RewrittenQuery:
     """JSON из ответа модели → `RewrittenQuery`; что угодно другое → поиск по исходному вопросу."""
     match = JSON_RE.search(text or "")
     if match is None:
@@ -75,7 +107,7 @@ def parse_rewrite(question: str, text: str, thinking: str | None = None) -> Rewr
             question=question,
             query=query,
             queries=queries if len(queries) >= 2 else [],
-            needs_search=bool(data.get("needs_search", True)),
+            intent=resolve_intent(data, has_history=has_history),
             relevant_documents=documents,
             abbreviations=_strings(data.get("abbreviations")),
             reason=str(data["reason"]) if data.get("reason") else None,
@@ -109,4 +141,9 @@ class QueryRewriter:
             ),
         ]
         response = await self._llm.achat(messages)
-        return parse_rewrite(question, response.message.content or "", thinking_text(response.message))
+        return parse_rewrite(
+            question,
+            response.message.content or "",
+            thinking_text(response.message),
+            has_history=bool(turns) or bool(summary),
+        )
