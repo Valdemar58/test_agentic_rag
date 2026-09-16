@@ -62,7 +62,7 @@ def document_meta(
     )
 
 
-def file_meta(row_id: str, sha: str, *, name: str = "приказ.docx", role: str = "main") -> FileMetadata:
+def file_meta(row_id: str, sha: str, *, name: str = "документ.docx", role: str = "main") -> FileMetadata:
     return FileMetadata(
         file_sha256=sha,
         file_name=name,
@@ -86,16 +86,22 @@ def make_payloads(
     department: str | None = "Отдел охраны труда",
     subject: str | None = None,
     file_role: str = "main",
+    file_name: str = "документ.docx",
+    sections: int = 1,
 ) -> tuple[list[ChunkPayload], list[ChunkPayload]]:
-    """Документ «Тема / 1. Раздел / 1.N. текст» → child- и parent-payload'ы."""
+    """Документ «Тема / N. Раздел / N.M. текст» → child- и parent-payload'ы; тексты делятся по разделам."""
     doc = DoclingDocument(name="документ")
     doc.add_heading("Тема", level=1)
-    doc.add_heading("1. Раздел", level=2)
-    for index, text in enumerate(texts, start=1):
-        doc.add_text(label=DocItemLabel.TEXT, text=f"1.{index}. {text}")
+    per_section = max(1, -(-len(texts) // sections))
+    for section in range(sections):
+        doc.add_heading(f"{section + 1}. Раздел {section + 1}", level=2)
+        for index, text in enumerate(texts[section * per_section : (section + 1) * per_section], start=1):
+            doc.add_text(label=DocItemLabel.TEXT, text=f"{section + 1}.{index}. {text}")
     counter = WordTokenCounter()
-    root = f"{doc_kind} №{number}"
-    chunks = StructuralChunker(CHUNKING, counter).chunk(doc, (root,), file_sha256=sha)
+    label = f"{doc_kind} №{number}"
+    # корень крошек как в инжесте: основной файл — документ; приложение — документ и имя файла
+    root = (label,) if file_role == "main" else (label, f"Приложение «{file_name}»")
+    chunks = StructuralChunker(CHUNKING, counter).chunk(doc, root, file_sha256=sha)
     chunk_set = build_chunk_set(chunks, CHUNKING, counter, file_sha256=sha)
     meta = document_meta(
         doc_id,
@@ -106,7 +112,7 @@ def make_payloads(
         department=department,
         subject=subject,
     )
-    file = file_meta(row_id, sha, role=file_role)
+    file = file_meta(row_id, sha, name=file_name, role=file_role)
     separator = CHUNKING.breadcrumb_separator
     return (
         [child_payload(meta, file, chunk, separator) for chunk in chunk_set.children],
@@ -145,8 +151,13 @@ class InMemoryCorpus:
         department: str | None = "Отдел охраны труда",
         subject: str | None = None,
         file_role: str = "main",
+        file_name: str = "документ.docx",
+        sections: int = 1,
+        doc_id: str | None = None,
     ) -> str:
-        doc_id, row_id, sha = new_ids()
+        """Добавляет файл документа; с `doc_id` — ещё один файл (приложение) уже добавленного документа."""
+        new_doc_id, row_id, sha = new_ids()
+        doc_id = doc_id or new_doc_id
         children, parents = make_payloads(
             doc_id,
             row_id,
@@ -159,6 +170,8 @@ class InMemoryCorpus:
             department=department,
             subject=subject,
             file_role=file_role,
+            file_name=file_name,
+            sections=sections,
         )
         self.index.upsert(children, self.embedder.encode([child.text for child in children]), parents)
         self.docs[name] = doc_id

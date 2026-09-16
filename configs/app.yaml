@@ -221,6 +221,10 @@ retrieval:
   # Значения фильтров «вид документа» и «подразделение» сверяются со списком из индекса без учёта
   # регистра и по вхождению («договор» → «Договорной документ»); список читается facet-запросом.
   known_values_limit: 500
+  # get_document_content (FR-2.3): документ отдаётся parent-разделами по порядку (основной текст, затем
+  # приложения) частями не больше стольких токенов (по счётчику инжеста) и разделов; дальше — next_offset.
+  content_max_tokens: 4000
+  content_max_sections: 40
 
 agent:
   llm:
@@ -252,6 +256,18 @@ card_service:
   timeout_s: 30
   # Кэш карточек: тип входящей связи восстанавливается из карточки-источника (N7), она берётся из кэша.
   cache_size: 256
+  # get_document_card (FR-2.2, N21 [ТРЕБУЕТ ПОДТВЕРЖДЕНИЯ]): реальная карточка в JSON — медиана 170 КБ, до 575 КБ
+  # (80 % — служебная секция маршрута KrStagesVirtual), целиком в контекст LLM не помещается. По умолчанию
+  # инструмент отдаёт эти секции в форме CardData без переименований; full=true — карточку целиком.
+  default_sections:
+    - DocumentCommonInfo
+    - OutgoingRefDocs
+    - IncomingRefDocs
+    - KrApprovalCommonInfoVirtual
+    - Approv
+    - ResponsibleErrand
+    - Performers
+    - DirectionActivityDCI
 
 mock_card_service:
   # Мок сервиса карточек (§9 ТЗ): FastAPI с маршрутами и pydantic-схемами реального сервиса, данные

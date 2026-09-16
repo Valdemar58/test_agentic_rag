@@ -287,6 +287,12 @@ class RetrievalSettings(StrictModel):
     known_values_limit: int = Field(
         gt=0, description="Сколько различных значений вида документа и подразделения читать из индекса"
     )
+    content_max_tokens: int = Field(
+        gt=0, description="get_document_content: бюджет одного ответа в токенах (токены разделов из инжеста)"
+    )
+    content_max_sections: int = Field(
+        gt=0, description="get_document_content: не больше разделов за один ответ"
+    )
 
     @model_validator(mode="after")
     def _limits_are_nested(self) -> RetrievalSettings:
@@ -332,6 +338,10 @@ class CardServiceSettings(StrictModel):
 
     timeout_s: float = Field(gt=0, description="Тайм-аут запроса к сервису карточек")
     cache_size: int = Field(ge=0, description="Кэш карточек в памяти (для типа входящих связей, N7)")
+    default_sections: list[str] = Field(
+        min_length=1,
+        description="get_document_card: секции карточки в ответе по умолчанию (N21); full=true отдаёт все",
+    )
 
 
 class MockCardServiceSettings(StrictModel):

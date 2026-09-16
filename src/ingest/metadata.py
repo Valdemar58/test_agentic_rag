@@ -76,12 +76,16 @@ class DocumentMetadata(_Frozen):
     @property
     def label(self) -> str:
         """Корневая крошка: «Приказ №144 от 15.01.2026» (вид, номер, дата — что есть)."""
-        parts = [self.doc_kind]
-        if self.doc_number:
-            parts.append(f"{NUMBER_PREFIX}{self.doc_number}")
-        if self.doc_date:
-            parts.append(f"от {self.doc_date:%d.%m.%Y}")
-        return " ".join(parts)
+        return document_label(self.doc_kind, self.doc_number, self.doc_date)
+
+
+def document_label(doc_kind: str, doc_number: str | None, doc_date: dt.date | None) -> str:
+    parts = [doc_kind]
+    if doc_number:
+        parts.append(f"{NUMBER_PREFIX}{doc_number}")
+    if doc_date:
+        parts.append(f"от {doc_date:%d.%m.%Y}")
+    return " ".join(parts)
 
 
 class FileMetadata(_Frozen):
@@ -218,8 +222,17 @@ def _relations(card: CardRecord, graph: LinksGraph) -> list[Relation]:
 def document_metadata(
     document: CorpusDocument, graph: LinksGraph, status: StatusRuleSettings
 ) -> DocumentMetadata:
-    """Строка за строкой по таблице маппинга (docs/chunk_metadata_mapping.md, §1–2)."""
-    card = document.card
+    """Метаданные документа корпуса: карточка плюс вид из манифеста как последний запасной вариант."""
+    return card_metadata(document.card, graph, status, fallback_kind=document.entry.doc_kind)
+
+
+def card_metadata(
+    card: CardRecord, graph: LinksGraph, status: StatusRuleSettings, *, fallback_kind: str = "Без вида"
+) -> DocumentMetadata:
+    """Строка за строкой по таблице маппинга (docs/chunk_metadata_mapping.md, §1–2).
+
+    Используется инжестом (граф связей экспорта даёт типы входящих связей) и MCP-инструментом
+    карточки (граф пустой: связи там берутся из сервиса карточек)."""
     common = card.common_text
     doc_date = _date(card.common_field("DocDate")) or _date(card.common_field("CreationDate"))
     state_id = _int(card.common_field("StateID"))
@@ -233,7 +246,7 @@ def document_metadata(
         tessa_card_id=str(card.id),
         card_type_name=card.type_name,
         card_type_caption=card.type_caption,
-        doc_kind=common("DocTypeTitle") or card.type_caption or document.entry.doc_kind,
+        doc_kind=common("DocTypeTitle") or card.type_caption or fallback_kind,
         doc_number=common("FullNumber") or common("SecondaryFullNumber"),
         doc_date=doc_date,
         doc_date_ts=int(dt.datetime(doc_date.year, doc_date.month, doc_date.day, tzinfo=dt.UTC).timestamp())
