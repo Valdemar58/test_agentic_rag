@@ -67,7 +67,11 @@ def test_example_config_matches_tz_requirements() -> None:
     assert config.retrieval.default_statuses == ["active"]  # AC-2.2
     assert (config.ingest.chunking.max_tokens, config.ingest.chunking.overlap_tokens) == (512, 64)  # FR-3
     assert config.embedding.runtime_device == "cpu" and config.reranker.device == "cpu"  # §2
-    assert config.agent.llm.enable_thinking is False  # N9
+    # N9 (решение 2026-09-16): размышления выключены в цикле инструментов, включены в разборе и ответе
+    assert config.agent.thinking.tool_loop is False and config.agent.thinking.rewrite is True
+    assert config.agent.thinking.answer is True
+    assert config.agent.llm_options("tool_loop").enable_thinking is False
+    assert config.agent.llm_options("answer").max_tokens == config.agent.llm.thinking_max_tokens
     assert config.eval.first_signal_budget_s == 5.0  # NFR-2
     assert config.paths.corpus_dir_absolute == ROOT / "data" / "corpus"
     assert config.eval.golden_set_absolute == ROOT / "eval" / "golden_set.yaml"

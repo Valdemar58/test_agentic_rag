@@ -124,15 +124,15 @@ def check_qdrant(settings: Settings, *, timeout_s: float) -> CheckResult:
 
 
 def _chat_payload(config: AppConfig, messages: list[dict[str, Any]], **extra: Any) -> dict[str, Any]:
-    llm = config.agent.llm
+    options = config.agent.llm_options("tool_loop")
     return {
         "model": config.vllm.qwen.served_model_name,
         "messages": messages,
-        "temperature": llm.temperature,
-        "top_p": llm.top_p,
-        "top_k": llm.top_k,
-        "max_tokens": llm.max_tokens,
-        "chat_template_kwargs": {"enable_thinking": llm.enable_thinking},
+        "temperature": options.temperature,
+        "top_p": options.top_p,
+        "top_k": options.top_k,
+        "max_tokens": options.max_tokens,
+        "chat_template_kwargs": options.chat_template_kwargs(),
         **extra,
     }
 

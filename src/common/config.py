@@ -303,13 +303,47 @@ class RetrievalSettings(StrictModel):
         return self
 
 
-class LlmSettings(StrictModel):
+LlmRole = Literal["rewrite", "tool_loop", "answer", "summary"]
+
+
+class SamplingSettings(StrictModel):
     temperature: float = Field(ge=0)
     top_p: float = Field(gt=0, le=1)
-    top_k: int = Field(ge=0)
-    max_tokens: int = Field(gt=0)
+    top_k: int = Field(ge=0, description="top_k vLLM (в OpenAI API его нет, уходит в тело запроса)")
+
+
+class LlmSettings(StrictModel):
+    max_tokens: int = Field(gt=0, description="Лимит генерации без размышлений")
+    thinking_max_tokens: int = Field(gt=0, description="Лимит генерации с размышлениями (они входят в лимит)")
     timeout_s: float = Field(gt=0)
-    enable_thinking: bool = Field(description="Режим размышлений Qwen3 (N9: выключен)")
+    max_retries: int = Field(ge=0, description="Повторы запроса к vLLM при сетевой ошибке")
+    sampling: SamplingSettings = Field(description="Сэмплинг без размышлений (рекомендация Qwen)")
+    thinking_sampling: SamplingSettings = Field(description="Сэмплинг с размышлениями (рекомендация Qwen)")
+
+
+class ThinkingSettings(StrictModel):
+    """Режим размышлений Qwen3 по ролям LLM агента (N9, решение заказчика 2026-09-16)."""
+
+    rewrite: bool = Field(description="Разбор и переписывание запроса с учётом истории")
+    tool_loop: bool = Field(description="Цикл выбора и вызова инструментов")
+    answer: bool = Field(description="Итоговый ответ с самопроверкой и цитатами")
+    summary: bool = Field(description="Суммаризация старых сообщений диалога")
+
+    def enabled(self, role: LlmRole) -> bool:
+        return bool(getattr(self, role))
+
+
+class LlmRequestOptions(StrictModel):
+    """Параметры одного запроса к vLLM для роли агента."""
+
+    temperature: float
+    top_p: float
+    top_k: int
+    max_tokens: int
+    enable_thinking: bool
+
+    def chat_template_kwargs(self) -> dict[str, bool]:
+        return {"enable_thinking": self.enable_thinking}
 
 
 class MemorySettings(StrictModel):
@@ -321,10 +355,23 @@ class MemorySettings(StrictModel):
 
 class AgentSettings(StrictModel):
     llm: LlmSettings
+    thinking: ThinkingSettings
     max_tool_calls: int = Field(gt=0, description="Бюджет вызовов инструментов на запрос (FR-1)")
     memory: MemorySettings
     session_document_cache: int = Field(ge=0, description="Кэш найденных документов в сессии (FR-6)")
     rewrite_query: bool = Field(description="Переписывать запрос с учётом истории и глоссария")
+
+    def llm_options(self, role: LlmRole) -> LlmRequestOptions:
+        """Сэмплинг, лимит и режим размышлений для роли — из `llm` и `thinking`."""
+        thinking = self.thinking.enabled(role)
+        sampling = self.llm.thinking_sampling if thinking else self.llm.sampling
+        return LlmRequestOptions(
+            temperature=sampling.temperature,
+            top_p=sampling.top_p,
+            top_k=sampling.top_k,
+            max_tokens=self.llm.thinking_max_tokens if thinking else self.llm.max_tokens,
+            enable_thinking=thinking,
+        )
 
 
 class McpSettings(StrictModel):
