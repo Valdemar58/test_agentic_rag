@@ -353,6 +353,14 @@ class MemorySettings(StrictModel):
     )
 
 
+class RewriteSettings(StrictModel):
+    """Переписывание вопроса с учётом истории диалога (FR-6)."""
+
+    enabled: bool
+    history_turns: int = Field(ge=0, description="Сколько последних пар «вопрос — ответ» видит переписывание")
+    answer_chars: int = Field(gt=0, description="До скольких символов обрезается прошлый ответ в промпте")
+
+
 class ToolOutputSettings(StrictModel):
     """Лимиты текста результатов инструментов, который видит LLM в цикле (символы)."""
 
@@ -379,7 +387,7 @@ class AgentSettings(StrictModel):
     answer: AnswerSettings
     memory: MemorySettings
     session_document_cache: int = Field(ge=0, description="Кэш найденных документов в сессии (FR-6)")
-    rewrite_query: bool = Field(description="Переписывать запрос с учётом истории и глоссария")
+    rewrite: RewriteSettings
 
     def llm_options(self, role: LlmRole) -> LlmRequestOptions:
         """Сэмплинг, лимит и режим размышлений для роли — из `llm` и `thinking`."""

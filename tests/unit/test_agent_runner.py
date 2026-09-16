@@ -17,9 +17,17 @@ import pytest
 import respx
 
 from agent.evidence import EvidenceRegistry
+from agent.memory import Turn
 from agent.prompts import BUDGET_CAVEAT, NO_ANSWER_PHRASE
 from agent.rendering import TOOL_CARD, TOOL_CONTENT, TOOL_RELATED, TOOL_SEARCH
-from agent.runner import AgentRunner, AgentSession, AnswerReady, ToolFinished, ToolStarted
+from agent.runner import (
+    AgentRunner,
+    AgentSession,
+    AnswerReady,
+    QueryRewritten,
+    ToolFinished,
+    ToolStarted,
+)
 from agent.tools import BUDGET_EXHAUSTED, AgentTools
 from common.config import DEFAULT_CONFIG_PATH, LlmRole, load_app_config
 from mcp_server.cards import CardServiceClient
@@ -44,11 +52,14 @@ class Harness:
     order_id: str
     llms: dict[str, ScriptedLLM]
 
-    def runner(self, loop_steps: list[Any], answer_steps: list[str]) -> AgentRunner:
+    def runner(
+        self, loop_steps: list[Any], answer_steps: list[str], rewrite_steps: list[str] | None = None
+    ) -> AgentRunner:
         self.llms = {
             "tool_loop": ScriptedLLM(steps=loop_steps),
             "answer": ScriptedLLM(steps=answer_steps),
-            "rewrite": ScriptedLLM(),
+            # без сценария переписывание отдаёт не-JSON и поиск идёт по исходному вопросу
+            "rewrite": ScriptedLLM(steps=rewrite_steps or []),
             "summary": ScriptedLLM(),
         }
 
@@ -118,13 +129,14 @@ async def test_search_then_answer_with_aliases_and_events(harness: Harness) -> N
     events = [event async for event in runner.run("Когда сдаётся отчёт по охране труда?", session)]
     assert [event.kind for event in events] == [
         "run_started",
+        "query_rewritten",
         "tool_started",
         "tool_finished",
         "loop_notes",
         "answer_delta",
         "answer_ready",
     ]
-    started, finished = events[1], events[2]
+    started, finished = events[2], events[3]
     assert isinstance(started, ToolStarted) and started.status == f"Ищу: «{QUERY}»"
     assert (
         isinstance(finished, ToolFinished)
@@ -198,7 +210,10 @@ async def test_aliases_resolve_to_ids_and_evidence_accumulates(harness: Harness)
     assert document.relations == [f"[{related.alias}] {related.label} — в отмену (исходящая)"]
     assert answer.document_aliases[0] == "D1" and related.alias in answer.document_aliases
     evidence = str(harness.llms["answer"].inputs[0][1].content)
-    assert f"связь: [{related.alias}]" in evidence and f"[{section_alias}] (D1, действует)" in evidence
+    assert f"[{section_alias}] (D1, действует)" in evidence
+    # сводка карточки (тема, согласующие, связи) — в свидетельствах, факты из неё цитируются как [D1]
+    assert "    Тема: О назначении ответственных" in evidence
+    assert f"    [{related.alias}] {related.label} — в отмену (исходящая)" in evidence
 
 
 async def test_budget_never_exceeds_max_tool_calls(harness: Harness) -> None:
@@ -238,3 +253,61 @@ def test_registry_is_shared_across_questions_of_a_session() -> None:
     assert isinstance(session.registry, EvidenceRegistry)
     session.registry.register_document("doc-1", label="Приказ №1")
     assert session.registry.document_by_alias("D1") is not None
+
+
+async def test_rewritten_query_drives_the_loop_and_turns_are_remembered(harness: Harness) -> None:
+    rewritten = "срок сдачи отчёта по охране труда для филиалов"
+    runner = harness.runner(
+        [tool_step(TOOL_SEARCH, query=rewritten), "Заметки: срок тот же."],
+        ["Для филиалов срок тот же — до пятого числа [S1]."],
+        rewrite_steps=[
+            f'{{"query": "{rewritten}", "needs_search": true, "relevant_documents": ["D1"], '
+            '"abbreviations": [], "reason": "уточнение к прошлому вопросу"}'
+        ],
+    )
+    session = harness.session()
+    session.registry.register_document(
+        harness.order_id, label="Приказ №144 от 15.01.2026", doc_status="active"
+    )
+    session.memory.add(Turn(question="Когда сдаётся отчёт по охране труда?", answer="До пятого числа [S1]."))
+
+    events = [event async for event in runner.run("а для филиалов?", session)]
+    rewritten_event = next(event for event in events if isinstance(event, QueryRewritten))
+    assert rewritten_event.query == rewritten and rewritten_event.changed and rewritten_event.needs_search
+    assert rewritten_event.relevant_documents == ["D1"]
+    ready = events[-1]
+    assert isinstance(ready, AnswerReady)
+    assert ready.answer.rewritten_query == rewritten and ready.answer.search_queries == [rewritten]
+
+    rewrite_input = str(harness.llms["rewrite"].inputs[0][1].content)
+    assert "Пользователь: Когда сдаётся отчёт по охране труда?" in rewrite_input
+    assert "[D1] Приказ №144 от 15.01.2026 (действует)" in rewrite_input
+    assert rewrite_input.endswith("Новый вопрос пользователя: а для филиалов?")
+    loop_user = str(harness.llms["tool_loop"].inputs[0][-1].content)
+    assert "Вопрос пользователя: а для филиалов?" in loop_user
+    assert f"Поисковый запрос с учётом диалога: {rewritten}" in loop_user
+
+    assert [turn.question for turn in session.memory.turns] == [
+        "Когда сдаётся отчёт по охране труда?",
+        "а для филиалов?",
+    ]
+    assert session.memory.turns[-1].rewritten_query == rewritten
+
+
+async def test_message_without_search_is_answered_from_history_without_tools(harness: Harness) -> None:
+    runner = harness.runner(
+        [tool_step(TOOL_SEARCH, query="не должно вызываться")],
+        ["Здравствуйте! Я ищу ответы в приказах и договорах организации. Задайте вопрос."],
+        rewrite_steps=['{"query": "привет", "needs_search": false, "reason": "приветствие"}'],
+    )
+    events = [event async for event in runner.run("Привет!", harness.session())]
+    assert not any(isinstance(event, ToolStarted) for event in events)
+    ready = events[-1]
+    assert isinstance(ready, AnswerReady)
+    answer = ready.answer
+    assert answer.needs_search is False and answer.tool_calls == [] and not answer.refused
+    assert answer.text.startswith("Здравствуйте!")
+    system, user = harness.llms["answer"].inputs[0]
+    assert "не требует поиска" in str(system.content)
+    assert "Сообщение пользователя: Привет!" in str(user.content)
+    assert not harness.llms["tool_loop"].inputs

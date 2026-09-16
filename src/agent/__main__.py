@@ -21,6 +21,7 @@ from agent.runner import (
     AnswerReady,
     LoopNotes,
     LoopText,
+    QueryRewritten,
     ToolFinished,
     ToolStarted,
 )
@@ -36,7 +37,12 @@ PROMPT = "Вопрос> "
 
 async def _ask(runner: AgentRunner, session: AgentSession, question: str) -> None:
     async for event in runner.run(question, session):
-        if isinstance(event, ToolStarted):
+        if isinstance(event, QueryRewritten):
+            if event.changed:
+                print(f"≈ Запрос с учётом диалога: {event.query}", flush=True)
+            if not event.needs_search:
+                print("· Поиск по документам не нужен", flush=True)
+        elif isinstance(event, ToolStarted):
             print(f"→ {event.status}", flush=True)
         elif isinstance(event, ToolFinished):
             mark = "✓" if event.ok else "✗"

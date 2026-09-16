@@ -21,14 +21,19 @@ from workflows.errors import WorkflowTimeoutError
 
 from agent.evidence import EvidenceRegistry, ToolCallRecord
 from agent.llm import thinking_text
+from agent.memory import ConversationMemory, Turn, render_history
 from agent.prompts import (
     BUDGET_CAVEAT,
+    CHAT_SYSTEM_PROMPT,
     NO_ANSWER_PHRASE,
     answer_system_prompt,
     answer_user_message,
+    chat_user_message,
     loop_system_prompt,
+    loop_user_message,
 )
 from agent.rendering import render_evidence, status_text_for
+from agent.rewrite import QueryRewriter, RewrittenQuery
 from agent.tools import AgentTools, ToolRun
 from common.config import AppConfig, LlmRole
 
@@ -54,6 +59,17 @@ class AgentEvent(BaseModel):
 class RunStarted(AgentEvent):
     kind: Literal["run_started"] = "run_started"
     question: str
+
+
+class QueryRewritten(AgentEvent):
+    kind: Literal["query_rewritten"] = "query_rewritten"
+    question: str
+    query: str = Field(description="Самодостаточный поисковый запрос (FR-6)")
+    changed: bool
+    needs_search: bool
+    relevant_documents: list[str]
+    abbreviations: list[str]
+    reason: str | None
 
 
 class ToolStarted(AgentEvent):
@@ -91,6 +107,8 @@ class Answer(BaseModel):
     text: str
     refused: bool = Field(description="Ответ начинается с явного отказа «В документах ответа нет»")
     budget_exhausted: bool
+    rewritten_query: str | None = Field(description="Переписанный запрос, если отличался от вопроса")
+    needs_search: bool = Field(description="False — ответ без инструментов (приветствие и т.п.)")
     notes: str | None
     search_queries: list[str]
     tool_calls: list[ToolCallRecord]
@@ -111,10 +129,11 @@ class AnswerReady(AgentEvent):
 
 
 class AgentSession:
-    """Состояние одного диалога: реестр свидетельств (кэш найденных документов, FR-6)."""
+    """Состояние одного диалога: реестр свидетельств (кэш найденных документов) и память ходов (FR-6)."""
 
     def __init__(self, config: AppConfig) -> None:
         self.registry = EvidenceRegistry(config.agent.session_document_cache)
+        self.memory = ConversationMemory()
 
 
 def _loop_memory() -> ChatMemoryBuffer:
@@ -151,22 +170,38 @@ class AgentRunner:
         agent_settings = self._config.agent
         started = time.perf_counter()
         yield RunStarted(question=question)
+        rewritten = await self._rewrite(question, session)
+        yield QueryRewritten(
+            question=question,
+            query=rewritten.query,
+            changed=rewritten.changed,
+            needs_search=rewritten.needs_search,
+            relevant_documents=rewritten.relevant_documents,
+            abbreviations=rewritten.abbreviations,
+            reason=rewritten.reason,
+        )
         run = ToolRun(
             registry=session.registry,
             max_calls=agent_settings.max_tool_calls,
             limits=agent_settings.tool_output,
         )
         notes = ""
-        async for event in self._tool_loop(question, run):
-            if isinstance(event, LoopNotes):
-                notes = event.text
-            yield event
+        if rewritten.needs_search:
+            async for event in self._tool_loop(loop_user_message(question, rewritten.query), run):
+                if isinstance(event, LoopNotes):
+                    notes = event.text
+                yield event
         loop_seconds = time.perf_counter() - started
 
         answer_started = time.perf_counter()
         text = ""
         thinking: str | None = None
-        async for delta, final in self._compose(question, notes, run):
+        stream = (
+            self._compose(question, notes, run)
+            if rewritten.needs_search
+            else self._compose_chat(question, session)
+        )
+        async for delta, final in stream:
             if final is not None:
                 text = final.content or ""
                 thinking = thinking_text(final)
@@ -176,11 +211,15 @@ class AgentRunner:
         if run.budget_exhausted and BUDGET_CAVEAT not in text:
             text = f"{text}\n\n{BUDGET_CAVEAT}".strip()
         session.registry.trim()
+        rewritten_query = rewritten.query if rewritten.changed else None
+        session.memory.add(Turn(question=question, answer=text, rewritten_query=rewritten_query))
         answer = Answer(
             question=question,
             text=text,
-            refused=text.startswith(NO_ANSWER_PHRASE),
+            refused=rewritten.needs_search and text.startswith(NO_ANSWER_PHRASE),
             budget_exhausted=run.budget_exhausted,
+            rewritten_query=rewritten.query if rewritten.changed else None,
+            needs_search=rewritten.needs_search,
             notes=notes or None,
             search_queries=run.search_queries,
             tool_calls=list(run.calls),
@@ -193,9 +232,25 @@ class AgentRunner:
         )
         yield AnswerReady(answer=answer)
 
+    # ---------- переписывание запроса (FR-6) ----------
+
+    async def _rewrite(self, question: str, session: AgentSession) -> RewrittenQuery:
+        rewriter = QueryRewriter(self._llms("rewrite"), self._config.agent.rewrite)
+        return await rewriter.rewrite(
+            question, session.memory.turns, session.registry.documents(), session.memory.summary
+        )
+
+    def _history(self, session: AgentSession) -> str:
+        rewrite = self._config.agent.rewrite
+        return render_history(
+            session.memory.recent(rewrite.history_turns),
+            answer_chars=rewrite.answer_chars,
+            summary=session.memory.summary,
+        )
+
     # ---------- цикл инструментов ----------
 
-    async def _tool_loop(self, question: str, run: ToolRun) -> AsyncIterator[AgentEvent]:
+    async def _tool_loop(self, user_message: str, run: ToolRun) -> AsyncIterator[AgentEvent]:
         agent_settings = self._config.agent
         agent = FunctionAgent(
             tools=list(self._tools.bind(run)),
@@ -204,7 +259,7 @@ class AgentRunner:
             timeout=agent_settings.loop_timeout_s,
         )
         handler = agent.run(
-            user_msg=question,
+            user_msg=user_message,
             memory=_loop_memory(),
             max_iterations=agent_settings.max_tool_calls + EXTRA_LLM_STEPS,
             early_stopping_method="generate",
@@ -257,6 +312,23 @@ class AgentRunner:
             ChatMessage(role="system", content=answer_system_prompt(budget_exhausted=run.budget_exhausted)),
             ChatMessage(role="user", content=answer_user_message(question, notes, evidence)),
         ]
+        async for item in self._stream_answer(messages):
+            yield item
+
+    async def _compose_chat(
+        self, question: str, session: AgentSession
+    ) -> AsyncIterator[tuple[str, ChatMessage | None]]:
+        """Ответ без инструментов: приветствие, вопрос о возможностях, переформулировка прошлого ответа."""
+        messages = [
+            ChatMessage(role="system", content=CHAT_SYSTEM_PROMPT),
+            ChatMessage(role="user", content=chat_user_message(question, self._history(session))),
+        ]
+        async for item in self._stream_answer(messages):
+            yield item
+
+    async def _stream_answer(
+        self, messages: list[ChatMessage]
+    ) -> AsyncIterator[tuple[str, ChatMessage | None]]:
         llm = self._llms("answer")
         last: ChatMessage | None = None
         async for response in await llm.astream_chat(messages):

@@ -274,7 +274,12 @@ agent:
     summary_trigger_tokens: 6000
   # FR-6: кэш документов, найденных в рамках сессии.
   session_document_cache: 20
-  rewrite_query: true
+  # FR-6: переписывание вопроса с учётом истории в самодостаточный поисковый запрос (LLM роли rewrite);
+  # в промпт попадают последние history_turns пар «вопрос — ответ», ответы обрезаются до answer_chars.
+  rewrite:
+    enabled: true
+    history_turns: 5
+    answer_chars: 800
 
 mcp:
   # FastMCP, транспорт streamable-http (N14).

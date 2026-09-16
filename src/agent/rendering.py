@@ -293,7 +293,12 @@ def _render_related(data: dict[str, Any], registry: EvidenceRegistry) -> Rendere
     if relation_lines:
         document.relations = relation_lines
     types = ", ".join(data.get("relation_types") or []) or "без типа"
-    summary = f"Связей: {len(related)} ({types})" if related else "Связей нет"
+    if related:
+        summary = f"Связей: {len(related)} ({types})"
+    elif data.get("relation_types"):
+        summary = f"Связей запрошенного типа нет; есть: {types}"
+    else:
+        summary = "Связей нет"
     return Rendered(text="\n".join(lines), summary=summary, document_aliases=_unique(aliases))
 
 
@@ -369,12 +374,17 @@ def render_evidence(
     """Документы и фрагменты прогона для промпта итогового ответа, в бюджете `evidence_max_chars`."""
     if not fragment_aliases and not document_aliases:
         return NO_EVIDENCE
-    lines = ["Документы:"]
+    lines = ["Документы (факты карточки цитируй ссылкой на документ, например [D1]):"]
     for alias in _unique(document_aliases):
         document = registry.document_by_alias(alias)
         if document is None:
             continue
         line = f"[{document.alias}] {document.label or FALLBACK_LABEL} — {document.status}"
+        if document.card_text:
+            # сводка карточки без первой строки (она повторяет подпись и статус); связи уже внутри
+            lines.append(line)
+            lines.extend(f"    {item}" for item in document.card_text.splitlines()[1:])
+            continue
         if document.subject:
             line += f"; тема: «{document.subject}»"
         if document.department:
