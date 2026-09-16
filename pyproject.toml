@@ -148,6 +148,12 @@ testpaths = ["tests"]
 pythonpath = ["."]
 addopts = "--import-mode=importlib -ra"
 asyncio_mode = "auto"
+filterwarnings = [
+    # FunctionAgent LlamaIndex обходит атрибуты LLM через inspect.getmembers и трогает устаревшие поля pydantic
+    "ignore::pydantic.warnings.PydanticDeprecatedSince20",
+    "ignore::pydantic.warnings.PydanticDeprecatedSince211",
+    "ignore:is_running called from within a step:DeprecationWarning",
+]
 markers = [
     "contract: тесты, требующие внешних путей TESSA_SDK_PATH и CARD_SERVICE_PATH",
     "integration: тесты, требующие поднятого стенда (docker compose)",

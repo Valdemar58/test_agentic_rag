@@ -353,10 +353,30 @@ class MemorySettings(StrictModel):
     )
 
 
+class ToolOutputSettings(StrictModel):
+    """Лимиты текста результатов инструментов, который видит LLM в цикле (символы)."""
+
+    fragment_chars: int = Field(gt=0, description="Текст одного фрагмента поиска")
+    card_chars: int = Field(gt=0, description="Секции карточки после сводки")
+    section_chars: int = Field(gt=0, description="Один раздел документа")
+    content_chars: int = Field(gt=0, description="Все разделы за один вызов get_document_content")
+
+
+class AnswerSettings(StrictModel):
+    """Итоговый ответ: сколько свидетельств попадает в промпт (символы)."""
+
+    evidence_max_chars: int = Field(gt=0, description="Бюджет всех свидетельств в промпте ответа")
+    context_chars: int = Field(ge=0, description="Контекст раздела-родителя при каждом фрагменте")
+
+
 class AgentSettings(StrictModel):
     llm: LlmSettings
     thinking: ThinkingSettings
     max_tool_calls: int = Field(gt=0, description="Бюджет вызовов инструментов на запрос (FR-1)")
+    tool_timeout_s: float = Field(gt=0, description="Тайм-аут одного вызова инструмента MCP")
+    loop_timeout_s: float = Field(gt=0, description="Аварийный предел цикла инструментов")
+    tool_output: ToolOutputSettings
+    answer: AnswerSettings
     memory: MemorySettings
     session_document_cache: int = Field(ge=0, description="Кэш найденных документов в сессии (FR-6)")
     rewrite_query: bool = Field(description="Переписывать запрос с учётом истории и глоссария")
