@@ -321,6 +321,17 @@ class McpSettings(StrictModel):
     path: str = Field(pattern=r"^/", description="Путь streamable-http endpoint")
 
 
+class MockCardServiceSettings(StrictModel):
+    """Мок сервиса карточек в dev (§9 ТЗ): те же маршруты и схемы, данные из архива экспорта."""
+
+    host: str
+    port: int = Field(ge=1, le=65535, description="Порт мока; тот же, что у реального сервиса по умолчанию")
+    ref_type_view: str = Field(description="Алиас представления справочника типов связей")
+    ref_type_columns: list[str] = Field(
+        min_length=3, description="Колонки представления типов связей: id, прямое и обратное имя"
+    )
+
+
 class UiSettings(StrictModel):
     host: str
     port: int = Field(ge=1, le=65535)
@@ -368,6 +379,7 @@ class AppConfig(StrictModel):
     retrieval: RetrievalSettings
     agent: AgentSettings
     mcp: McpSettings
+    mock_card_service: MockCardServiceSettings
     ui: UiSettings
     langfuse: LangfuseSettings
     eval: EvalSettings

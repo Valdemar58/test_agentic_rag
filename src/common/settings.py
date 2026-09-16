@@ -24,9 +24,10 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    card_service_url: str = Field(
-        default="http://localhost:8010",
-        description="Сервис карточек: мок в dev, реальный FastAPI-сервис заказчика в проде",
+    card_service_url: str | None = Field(
+        default=None,
+        description="Сервис карточек: мок в dev, реальный FastAPI-сервис заказчика в проде; "
+        "по умолчанию мок на порту mock_card_service.port из конфига",
     )
     card_service_username: str = Field(default="", description="HTTP Basic к реальному сервису (N6)")
     card_service_password: SecretStr = Field(
@@ -63,6 +64,9 @@ class Settings(BaseSettings):
 
     def resolve_qdrant_url(self) -> str:
         return self.qdrant_url or f"http://{LOCALHOST}:{self.qdrant_port}"
+
+    def resolve_card_service_url(self, config: AppConfig) -> str:
+        return self.card_service_url or f"http://{LOCALHOST}:{config.mock_card_service.port}"
 
     def resolve_llm_base_url(self, config: AppConfig) -> str:
         return self.llm_base_url or f"http://{LOCALHOST}:{config.vllm.qwen.port}/v1"

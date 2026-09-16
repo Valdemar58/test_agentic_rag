@@ -240,6 +240,17 @@ mcp:
   port: 8020
   path: /mcp
 
+mock_card_service:
+  # Мок сервиса карточек (§9 ТЗ): FastAPI с маршрутами и pydantic-схемами реального сервиса, данные
+  # из архива экспорта (paths.corpus_dir). Порт тот же, что у сервиса заказчика по умолчанию (8010):
+  # переключение мок ↔ реальный сервис — только CARD_SERVICE_URL. Запуск: python -m mocks.card_service.
+  host: 0.0.0.0
+  port: 8010
+  # Представление справочника типов связей: строки собираются из связей экспорта (manifest, links_graph).
+  # Реальные колонки представления Тессы по экспорту не проверялись (см. N20); MCP представления не использует.
+  ref_type_view: RefType
+  ref_type_columns: [RefTypeID, RefTypeName, RefTypeReverseName]
+
 ui:
   # Chainlit.
   host: 0.0.0.0

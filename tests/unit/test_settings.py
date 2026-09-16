@@ -46,7 +46,8 @@ def test_defaults_point_to_loopback_and_ports_from_config(clean_env: pytest.Monk
     assert settings.resolve_vlm_base_url(config) == f"http://{LOCALHOST}:{config.vllm.dots.port}/v1"
     assert settings.resolve_mcp_url(config) == f"http://{LOCALHOST}:{config.mcp.port}{config.mcp.path}"
     assert settings.langfuse_enabled is False
-    assert settings.card_service_url.endswith(":8010")
+    assert settings.card_service_url is None
+    assert settings.resolve_card_service_url(config) == f"http://{LOCALHOST}:{config.mock_card_service.port}"
 
 
 def test_environment_overrides_and_secrets_are_hidden(clean_env: pytest.MonkeyPatch) -> None:
@@ -61,7 +62,7 @@ def test_environment_overrides_and_secrets_are_hidden(clean_env: pytest.MonkeyPa
     clean_env.setenv("LANGFUSE_SECRET_KEY", "sk-lf-x")
     settings = Settings(_env_file=None)
     config = load_app_config(DEFAULT_CONFIG_PATH)
-    assert settings.card_service_url == "http://cards.example.internal"
+    assert settings.resolve_card_service_url(config) == "http://cards.example.internal"
     assert settings.database_url == "postgresql+asyncpg://rag:p@ss@postgres-app:5434/rag"
     assert settings.resolve_qdrant_url() == "http://qdrant:6333"
     assert settings.resolve_llm_base_url(config) == "http://vllm-qwen:8000/v1"

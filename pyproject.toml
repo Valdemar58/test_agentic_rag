@@ -112,8 +112,7 @@ python_version = "3.13"
 strict = true
 plugins = ["pydantic.mypy"]
 mypy_path = "src,tools/tessa_export/src"
-# Каталог mocks добавляется в список при его появлении (этап 5)
-files = ["src", "scripts", "tests", "tools/tessa_export/src", "alembic"]
+files = ["src", "scripts", "tests", "tools/tessa_export/src", "alembic", "mocks"]
 namespace_packages = true
 explicit_package_bases = true
 exclude = ["^data/", "^\\.venv/"]
@@ -144,6 +143,8 @@ disallow_untyped_decorators = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# корень — для пакета mocks (он не устанавливается в окружение, в отличие от src)
+pythonpath = ["."]
 addopts = "--import-mode=importlib -ra"
 asyncio_mode = "auto"
 markers = [
