@@ -98,3 +98,14 @@ def test_strip_model_sources_handles_headers_and_keeps_body() -> None:
     assert strip_model_sources("Ответ [S1].\n\n### Источники\n- [S1] …") == "Ответ [S1]."
     assert strip_model_sources("Ответ.\nИсточники:\n[1] x") == "Ответ."
     assert strip_model_sources("Источники указаны в тексте [S1].") == "Источники указаны в тексте [S1]."
+
+
+def test_strip_model_links_block_only_when_it_is_a_list_of_markers() -> None:
+    """Живой прогон 2026-09-16: модель дублировала ссылки блоком «Ссылки» вопреки промпту."""
+    assert strip_model_sources("Ответ [S1].\nСсылки:\n[S1], [S2], [S1].") == "Ответ [S1]."
+    assert strip_model_sources("Ответ [S1].\n\n**Ссылки:** [S1][S2][D1]") == "Ответ [S1]."
+    assert strip_model_sources("Ответ.\nСсылки:\n[S1] Приказ №176 → Раздел 6\n[S2] Приказ №99") == "Ответ."
+    kept = "Ответ.\nСсылки на ПВТР в тексте приказа [S1].\nОни обязательны."
+    assert strip_model_sources(kept) == kept
+    prose = "Ответ.\nСсылки:\nсм. раздел 6 [S1]"
+    assert strip_model_sources(prose) == prose, "после заголовка проза — блок не трогаем"

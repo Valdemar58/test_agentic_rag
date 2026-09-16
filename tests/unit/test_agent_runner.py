@@ -39,6 +39,7 @@ from agent.tools import (
     AgentTools,
     ToolResultData,
     ToolTransport,
+    normalize_status,
 )
 from agent.tracing import Tracing
 from common.config import DEFAULT_CONFIG_PATH, AppConfig, LlmRole, load_app_config
@@ -536,6 +537,24 @@ async def test_loop_without_search_gets_forced_search_and_second_pass(harness: H
         "answer",
     ]
     assert tracing.steps[2]["output"]["fragments"][0] == "S1"
+
+
+async def test_almost_right_arguments_are_normalized_instead_of_failing(harness: Harness) -> None:
+    """Живой диалог 2026-09-16: `statuses: ["действует"]` и лишний `top_k` стоили по вызову из бюджета."""
+    runner = harness.runner(
+        [
+            tool_step(TOOL_SEARCH, query=QUERY, filters={"statuses": ["Действует"], "doc_kinds": ["приказ"]}),
+            tool_step(TOOL_CONTENT, doc_id="D1", section_id="S1", top_k=5),
+            "Заметки: всё найдено.",
+        ],
+        ["Ответ [S1]."],
+    )
+    answer = await runner.ask("Когда сдаётся отчёт?", harness.session())
+    search, content = answer.tool_calls
+    assert search.ok and search.arguments["filters"] == {"statuses": ["active"], "doc_kinds": ["приказ"]}
+    assert content.ok and "top_k" not in content.arguments and content.summary == "Прочитано разделов: 1 из 1"
+    assert normalize_status("отменённый") == "cancelled" and normalize_status("проект") == "draft"
+    assert normalize_status("active") == "active" and normalize_status("архив") == "архив"
 
 
 class _EmptySearch:

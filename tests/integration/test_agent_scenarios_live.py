@@ -130,6 +130,66 @@ async def test_ac12_question_without_answer_is_refused(runner: AgentRunner, conf
     assert answer.refused, answer.text[:300]
 
 
+EVERYDAY_QUESTIONS = [
+    "Во сколько я должен вернуться с обеда?",
+    "Во сколько мне приходить на работу?",
+    "Сколько дней отпуска мне положено?",
+    "Могу ли я работать из дома?",
+    "Что мне делать, если я заболел?",
+    "Можно ли мне курить на территории?",
+    "Кому я должен сообщить об опоздании?",
+    "Нужно ли мне носить спецодежду?",
+    "Когда мне выплатят зарплату?",
+    "Можно ли играть в настольный теннис в офисе?",
+    "Мне нужно ехать в командировку, что оформить?",
+    "Как мне получить пропуск?",
+]
+SMALL_TALK = ["Привет! Что ты умеешь?", "Спасибо, всё понятно"]
+LUNCH_QUESTION = EVERYDAY_QUESTIONS[0]
+RULES_QUESTION = "Какие правила внутреннего трудового распорядка установлены?"
+APPENDIX_FOLLOW_UP = "Каким должностям установлен суммированный учёт рабочего времени?"
+
+
+async def test_everyday_first_person_questions_are_routed_to_search(
+    runner: AgentRunner, config: AppConfig
+) -> None:
+    """Живой диалог 2026-09-16: «во сколько вернуться с обеда» уходил в режим беседы без единого поиска."""
+    for question in EVERYDAY_QUESTIONS:
+        rewritten = await runner.rewrite(question, AgentSession(config))
+        assert rewritten.needs_search, f"«{question}» → {rewritten.intent}: {rewritten.reason}"
+    for message in SMALL_TALK:
+        rewritten = await runner.rewrite(message, AgentSession(config))
+        assert not rewritten.needs_search, f"«{message}» → {rewritten.intent}: {rewritten.reason}"
+
+
+async def test_lunch_question_is_answered_from_rules_with_citations(
+    runner: AgentRunner, config: AppConfig
+) -> None:
+    answer = await runner.ask(LUNCH_QUESTION, AgentSession(config))
+    assert answer.needs_search and answer.search_queries, "поиск обязателен, даже если модель его пропустила"
+    assert not answer.refused and answer.sources, answer.text[:300]
+    assert any(source.kind == "fragment" for source in answer.sources)
+
+
+async def test_appendix_list_follow_up_cites_the_fragment_with_the_list(
+    runner: AgentRunner, config: AppConfig
+) -> None:
+    """Живой диалог 2026-09-16: перечень должностей из приложения выдавался без ссылки на само приложение."""
+    session = AgentSession(config)
+    await runner.ask(RULES_QUESTION, session)
+    answer = await runner.ask(APPENDIX_FOLLOW_UP, session)
+    assert not answer.refused, answer.text[:300]
+    cited = [
+        source
+        for source in answer.sources
+        if source.kind == "fragment" and "риложение" in (source.breadcrumbs or "")
+    ]
+    assert cited, [source.line() for source in answer.sources]
+    assert any(re.search(r"(?m)^\s*\d+\.\s", source.text or "") for source in cited), (
+        "по ссылке открывается фрагмент с самим перечнем, а не с упоминанием приложения"
+    )
+
+
 @pytest.mark.parametrize(("question", "clarification", "stems"), CLARIFICATIONS)
 async def test_ac61_clarification_is_rewritten_into_self_contained_query(
     runner: AgentRunner, config: AppConfig, question: str, clarification: str, stems: list[str]

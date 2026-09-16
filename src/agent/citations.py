@@ -26,6 +26,9 @@ ALIAS_IN_GROUP_RE = re.compile(r"[DS]\d+")
 BARE_DOC_RE = re.compile(r"(?<![\[\w])(D\d+)(?![\]\w])")
 # блок «Источники», который модель иногда дописывает сама, — до конца текста
 MODEL_SOURCES_RE = re.compile(r"\n[ \t]*(?:\*\*|#+\s*)?Источники\s*:?(?:\*\*)?[ \t]*\n.*\Z", re.DOTALL)
+# блок «Ссылки: [S1][S2]» или «Ссылки:\n[S1] Приказ…» в конце ответа — дубль блока «Источники»
+MODEL_LINKS_RE = re.compile(r"\n[ \t]*(?:\*\*|#+\s*)?Ссылки\s*:?(?:\*\*)?[ \t]*(?P<rest>.*)\Z", re.DOTALL)
+LINK_LINE_RE = re.compile(r"^\[[^\]]*\]")
 SourceKind = Literal["fragment", "document"]
 
 
@@ -101,8 +104,17 @@ def _document_source(number: int, document: KnownDocument) -> Source:
 
 
 def strip_model_sources(text: str) -> str:
-    """Убирает блок «Источники», дописанный моделью: он строится здесь детерминированно."""
-    return MODEL_SOURCES_RE.sub("", text).rstrip()
+    """Убирает блоки «Источники» и «Ссылки», дописанные моделью: источники строятся здесь детерминированно.
+
+    Блок «Ссылки» снимается, только если после заголовка одни маркеры или строки вида «[S1] Приказ…»
+    (живой прогон 2026-09-16: модель дублировала ссылки списком вопреки промпту)."""
+    text = MODEL_SOURCES_RE.sub("", text).rstrip()
+    match = MODEL_LINKS_RE.search(text)
+    if match is not None:
+        lines = [line.strip() for line in match.group("rest").splitlines() if line.strip()]
+        if all(LINK_LINE_RE.match(line) for line in lines):
+            text = text[: match.start()].rstrip()
+    return text
 
 
 def cite_answer(text: str, registry: EvidenceRegistry) -> CitedAnswer:

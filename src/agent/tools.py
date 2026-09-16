@@ -18,7 +18,7 @@ from llama_index.tools.mcp import BasicMCPClient, McpToolSpec
 from mcp.types import CallToolResult, TextContent, Tool
 from pydantic import BaseModel, Field
 
-from agent.evidence import EvidenceRegistry, ToolCallRecord
+from agent.evidence import FILTERS_ARGUMENT, STATUS_RU, EvidenceRegistry, ToolCallRecord
 from agent.rendering import TOOL_RELATED, TOOL_SEARCH, cut, render
 from common.config import ToolOutputSettings
 
@@ -131,6 +131,17 @@ def _clean(arguments: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in arguments.items() if value is not None}
 
 
+def normalize_status(value: object) -> object:
+    """«действует», «Действующий», «отменён», «проект» → коды статусов индекса; коды и прочее — как есть."""
+    text = str(value).strip().casefold()
+    if text in STATUS_RU:
+        return text
+    for code, word in STATUS_RU.items():
+        if text.startswith(word[:5]):
+            return code
+    return value
+
+
 def _call_key(name: str, arguments: dict[str, Any]) -> tuple[str, str]:
     return name, json.dumps(arguments, ensure_ascii=False, sort_keys=True, default=str)
 
@@ -172,6 +183,25 @@ class AgentTools:
         """Вызов инструмента раннером в обход модели: те же бюджет, запись вызова и реестр свидетельств."""
         return await self._call(name, arguments, run)
 
+    def _normalize(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        """Аргументы, которые модель пишет «почти правильно», не должны стоить вызова из бюджета.
+
+        Живой диалог 2026-09-16: `statuses: ["действует"]` и лишний `top_k` у get_document_content —
+        два вызова ушли на ошибки валидации. Неизвестные аргументы отбрасываются по схеме инструмента,
+        русские названия статусов переводятся в коды индекса."""
+        schema = self._schemas.get(name)
+        if schema is not None:
+            unknown = [key for key in arguments if key not in schema.model_fields]
+            for key in unknown:
+                logger.info("Инструмент %s: аргумент %s не по схеме, отброшен", name, key)
+                arguments.pop(key)
+        filters = arguments.get(FILTERS_ARGUMENT)
+        if name == TOOL_SEARCH and isinstance(filters, dict) and isinstance(filters.get("statuses"), list):
+            filters = dict(filters)
+            filters["statuses"] = [normalize_status(item) for item in filters["statuses"]]
+            arguments[FILTERS_ARGUMENT] = filters
+        return arguments
+
     def _bind_one(self, tool: Tool, run: ToolRun) -> FunctionTool:
         name = tool.name
 
@@ -190,7 +220,7 @@ class AgentTools:
             run.context_exhausted = True
             logger.info("Контекст цикла исчерпан (%d символов), %s не вызван", run.context_chars, name)
             return CONTEXT_EXHAUSTED
-        arguments = run.registry.resolve_arguments(_clean(kwargs))
+        arguments = run.registry.resolve_arguments(self._normalize(name, _clean(kwargs)))
         if name == TOOL_RELATED:
             # все связи с типами и так видны в ответе; фильтр по типу только плодил повторные вызовы
             # (живой прогон 2026-09-16: 7 вызовов подряд с разными типами по одному документу)
