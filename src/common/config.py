@@ -518,6 +518,9 @@ class LangfuseSettings(StrictModel):
 class JudgeSettings(StrictModel):
     temperature: float = Field(ge=0)
     max_tokens: int = Field(gt=0)
+    source_chars: int = Field(
+        gt=0, description="До скольких символов обрезается текст фрагмента в промпте судьи"
+    )
 
 
 class EvalSettings(StrictModel):
