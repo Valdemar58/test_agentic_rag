@@ -13,7 +13,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from typing import Any
 from uuid import UUID
 
@@ -153,6 +153,36 @@ class ChunkIndex:
             found.update(str(point.payload[FILE_KEY]) for point in points if point.payload)
             if offset is None:
                 return found
+
+    def scroll_payload_fields(self, fields: Sequence[str]) -> Iterator[tuple[str, Mapping[str, Any]]]:
+        """Проход по коллекции child-чанков с частью payload: id и запрошенные поля.
+
+        Нужен отбору разделов глоссария (FR-5): заголовки читаются у всех чанков, а целиком забираются
+        только подошедшие (`get_chunks`), иначе в память поднимался бы весь индекс."""
+        offset: models.ExtendedPointId | None = None
+        while True:
+            points, offset = self._client.scroll(
+                self._settings.collection,
+                limit=self._settings.upsert_batch_size * 16,
+                offset=offset,
+                with_payload=list(fields),
+                with_vectors=False,
+            )
+            for point in points:
+                yield str(point.id), point.payload or {}
+            if offset is None:
+                return
+
+    def get_chunks(self, ids: Sequence[str]) -> list[ChunkPayload]:
+        """Чанки коллекции документов по их id (частями, чтобы не упереться в размер запроса)."""
+        found: list[ChunkPayload] = []
+        batch = self._settings.upsert_batch_size * 4
+        for start in range(0, len(ids), batch):
+            records = self._client.retrieve(
+                self._settings.collection, ids=list(ids[start : start + batch]), with_payload=True
+            )
+            found.extend(ChunkPayload.model_validate(record.payload) for record in records if record.payload)
+        return found
 
     def get_parent(self, parent_id: str) -> ChunkPayload | None:
         records = self._client.retrieve(self._settings.parents_collection, ids=[parent_id], with_payload=True)

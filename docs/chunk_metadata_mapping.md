@@ -45,7 +45,7 @@
 | `file_category` | `CardData.files[].category_caption` («Документ», «Приложение», «Дополнительные сведения», «Подписанные документы», «Файлы для отправки по ЭДО», «Получено из Диадока», «Подписи ЭП»; у части старых файлов пусто) | ✅ по экспорту |
 | `file_role` | `main` / `appendix` / `supplement` по правилу п. 3.1 | ⚙ |
 | `card_version`, `card_modified` | `Card.version`, `Card.modified` | ✅ |
-| `chunk_kind` | `structural` / `fallback` / `table` / `glossary` | ⚙ |
+| `chunk_kind` | `structural` / `fallback` / `table` (глоссарий FR-5 лежит не в чанках, а в отдельной коллекции `glossary`: термин, определение, документ-источник, раздел) | ⚙ |
 | `parent_id`, `chunk_index` | parent-child и порядок в документе | ⚙ |
 
 ## 3. Правила и допущения

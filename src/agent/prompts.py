@@ -243,6 +243,9 @@ LOOP_USER_TEMPLATE = """\
 Поисковый запрос с учётом диалога: {query}\
 """
 LOOP_QUERIES_TITLE = "Отдельные поисковые запросы (выполни каждый через hybrid_search):"
+LOOP_GLOSSARY_TITLE = (
+    "Расшифровки из глоссария организации (в запросе к hybrid_search пиши и сокращение, и расшифровку):"
+)
 
 CACHED_EVIDENCE_TEMPLATE = """\
 {message}
@@ -302,6 +305,14 @@ def rewrite_user_message(
 
 def chat_user_message(question: str, history: str) -> str:
     return CHAT_USER_TEMPLATE.format(history=history, question=question)
+
+
+def with_glossary(message: str, expansions: Sequence[tuple[str, str]]) -> str:
+    """Сообщение цикла с расшифровками аббревиатур вопроса (FR-5): модель должна искать по обеим формам."""
+    if not expansions:
+        return message
+    lines = "\n".join(f"— {term} — {definition}" for term, definition in expansions)
+    return f"{message}\n{LOOP_GLOSSARY_TITLE}\n{lines}"
 
 
 def with_cached_evidence(message: str, evidence: str) -> str:

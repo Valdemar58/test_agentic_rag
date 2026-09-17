@@ -22,6 +22,7 @@ from agent.runner import (
     AnswerRestarted,
     AnswerVerified,
     CacheUsed,
+    GlossaryUsed,
     LoopNotes,
     LoopText,
     QueryRewritten,
@@ -41,7 +42,10 @@ PROMPT = "Вопрос> "
 
 async def _ask(runner: AgentRunner, session: AgentSession, question: str) -> None:
     async for event in runner.run(question, session):
-        if isinstance(event, QueryRewritten):
+        if isinstance(event, GlossaryUsed):
+            for item in event.expansions:
+                print(f"· Глоссарий: {item.term} — {item.definition}", flush=True)
+        elif isinstance(event, QueryRewritten):
             if event.changed:
                 print(f"≈ Запрос с учётом диалога: {event.query}", flush=True)
             for index, query in enumerate(event.queries, start=1):

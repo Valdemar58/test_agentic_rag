@@ -183,6 +183,21 @@ class AgentTools:
         """Вызов инструмента раннером в обход модели: те же бюджет, запись вызова и реестр свидетельств."""
         return await self._call(name, arguments, run)
 
+    async def lookup(self, name: str, arguments: dict[str, Any]) -> dict[str, Any] | None:
+        """Справочный вызов мимо бюджета и реестра (расшифровка аббревиатур до поиска, FR-5).
+
+        Возвращает structuredContent инструмента; ошибка транспорта или инструмента — None: шаг
+        справочный, вопрос из-за него падать не должен."""
+        try:
+            result = await self._transport.call_tool(name, arguments)
+        except Exception as exc:  # noqa: BLE001 — справочный вызов не должен ронять ответ
+            logger.warning("Инструмент %s (справочный вызов): %s", name, exc)
+            return None
+        if result.is_error:
+            logger.warning("Инструмент %s (справочный вызов) вернул ошибку: %.200s", name, result.text)
+            return None
+        return result.structured
+
     def _normalize(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         """Аргументы, которые модель пишет «почти правильно», не должны стоить вызова из бюджета.
 

@@ -24,10 +24,11 @@ from starlette.responses import JSONResponse
 from common.config import AppConfig
 from common.settings import Settings
 from ingest.embeddings import build_embedder
+from ingest.glossary_index import GlossaryIndex
 from mcp_server.card_view import DocumentCard, build_document_card
 from mcp_server.cards import CardNotFoundError, CardServiceClient, CardServiceError, RelatedDocument
 from mcp_server.content import ContentNotFoundError, DocumentContent, DocumentReader
-from mcp_server.glossary import EmptyGlossary, GlossaryLookup, GlossaryResult
+from mcp_server.glossary import EmptyGlossary, GlossaryLookup, GlossaryResult, QdrantGlossary
 from mcp_server.reranker import BgeReranker
 from mcp_server.retrieval import HybridSearcher, SearchFilters, SearchResult
 
@@ -78,7 +79,11 @@ def build_services(config: AppConfig, settings: Settings) -> Services:
         password=settings.card_service_password.get_secret_value(),
     )
     reader = DocumentReader(client, config.qdrant, config.retrieval)
-    return Services(searcher=searcher, cards=cards, reader=reader, glossary=EmptyGlossary())
+    glossary: GlossaryLookup = EmptyGlossary()
+    if config.glossary.enabled:
+        index = GlossaryIndex(client, config.qdrant, config.embedding.dense_dim)
+        glossary = QdrantGlossary(index, embedder, config.glossary)
+    return Services(searcher=searcher, cards=cards, reader=reader, glossary=glossary)
 
 
 def _parse_doc_id(doc_id: str) -> UUID:

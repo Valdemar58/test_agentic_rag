@@ -360,7 +360,12 @@ def _render_glossary(data: dict[str, Any]) -> Rendered:
     entries: list[dict[str, Any]] = data.get("entries") or []
     lines = [f"Глоссарий, термин «{data.get('term', '')}»: определений {len(entries)}"]
     for entry in entries:
-        lines.append(f"- {entry.get('term')}: {entry.get('definition')} (источник: {entry.get('doc_label')})")
+        # статус источника показывается, только если документ не действует: определение может устареть
+        status = entry.get("doc_status")
+        mark = "" if status in (None, "active") else f", {status_text(str(status))}"
+        lines.append(
+            f"- {entry.get('term')}: {entry.get('definition')} (источник: {entry.get('doc_label')}{mark})"
+        )
     if data.get("note"):
         lines.append(f"Замечание: {data['note']}")
     summary = f"Определений в глоссарии: {len(entries)}" if entries else "Термин в глоссарии не найден"

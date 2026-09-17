@@ -280,7 +280,6 @@ class IngestSettings(StrictModel):
     chunking: ChunkingSettings
     parent_level: Literal["section", "document"] = Field(description="Уровень parent-чанка")
     tables_as_separate_chunks: bool
-    glossary_headings: list[str] = Field(min_length=1, description="Заголовки разделов глоссария")
 
 
 class RetrievalSettings(StrictModel):
@@ -309,7 +308,24 @@ class RetrievalSettings(StrictModel):
         return self
 
 
-LlmRole = Literal["rewrite", "tool_loop", "answer", "verify", "summary"]
+class GlossarySettings(StrictModel):
+    """Глоссарий организации (FR-5): сборка из разделов документов и поиск термина."""
+
+    enabled: bool = Field(description="Выключено — коллекция не собирается, glossary_lookup отвечает пустым")
+    headings: list[str] = Field(min_length=1, description="Заголовки разделов глоссария (без учёта регистра)")
+    term_max_words: int = Field(gt=0, description="Термин длиннее стольких слов — текст пункта, а не термин")
+    definition_min_chars: int = Field(gt=0, description="Короче этого определение не считается определением")
+    definition_max_chars: int = Field(gt=0, description="Длинное определение обрезается при записи")
+    max_entries_per_section: int = Field(
+        gt=0, description="Сколько кандидатов одного раздела уходит на подтверждение LLM"
+    )
+    lookup_top_k: int = Field(gt=0, description="Сколько записей отдаёт glossary_lookup")
+    match_ratio: float = Field(
+        gt=0, le=1, description="Похожесть запрошенного термина и найденного векторами (difflib)"
+    )
+
+
+LlmRole = Literal["rewrite", "tool_loop", "answer", "verify", "summary", "glossary"]
 
 
 class SamplingSettings(StrictModel):
@@ -335,6 +351,7 @@ class ThinkingSettings(StrictModel):
     answer: bool = Field(description="Итоговый ответ с самопроверкой и цитатами")
     verify: bool = Field(description="Проверка черновика ответа по фрагментам")
     summary: bool = Field(description="Суммаризация старых сообщений диалога")
+    glossary: bool = Field(description="Подтверждение разделов глоссария при сборке (FR-5)")
 
     def enabled(self, role: LlmRole) -> bool:
         return bool(getattr(self, role))
@@ -415,6 +432,16 @@ class VerifySettings(StrictModel):
     )
 
 
+class AgentGlossarySettings(StrictModel):
+    """Расшифровка аббревиатур вопроса по глоссарию перед поиском (FR-5, пункт «б»)."""
+
+    enabled: bool = Field(description="Выключено — запрос уходит в поиск без расшифровок")
+    max_terms: int = Field(gt=0, description="Сколько терминов одного вопроса ищется в глоссарии")
+    definition_chars: int = Field(
+        gt=0, description="Сколько символов расшифровки добавляется в поисковый запрос"
+    )
+
+
 class AgentSettings(StrictModel):
     llm: LlmSettings
     thinking: ThinkingSettings
@@ -430,6 +457,7 @@ class AgentSettings(StrictModel):
         ge=0, description="Сколько символов свидетельств из кэша сессии подаётся в цикл при уточнении"
     )
     rewrite: RewriteSettings
+    glossary: AgentGlossarySettings
 
     def llm_options(self, role: LlmRole) -> LlmRequestOptions:
         """Сэмплинг, лимит и режим размышлений для роли — из `llm` и `thinking`."""
@@ -521,6 +549,7 @@ class AppConfig(StrictModel):
     qdrant: QdrantSettings
     ingest: IngestSettings
     retrieval: RetrievalSettings
+    glossary: GlossarySettings
     agent: AgentSettings
     mcp: McpSettings
     card_service: CardServiceSettings

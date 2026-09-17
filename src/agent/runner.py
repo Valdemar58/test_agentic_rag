@@ -25,6 +25,7 @@ from workflows.errors import WorkflowRuntimeError, WorkflowTimeoutError
 
 from agent.citations import Source, cite_answer, strip_model_sources
 from agent.evidence import EvidenceRegistry, ToolCallRecord
+from agent.glossary import Expansion, candidate_terms, expand_query, first_expansion
 from agent.llm import thinking_text
 from agent.memory import ConversationMemory, Turn, render_history
 from agent.notes import facts_only
@@ -41,9 +42,17 @@ from agent.prompts import (
     loop_user_message,
     with_cached_evidence,
     with_forced_search,
+    with_glossary,
     with_verification_feedback,
 )
-from agent.rendering import TOOL_SEARCH, cut, render_cached_evidence, render_evidence, status_text_for
+from agent.rendering import (
+    TOOL_GLOSSARY,
+    TOOL_SEARCH,
+    cut,
+    render_cached_evidence,
+    render_evidence,
+    status_text_for,
+)
 from agent.rewrite import QueryRewriter, RewrittenQuery
 from agent.tools import AgentTools, ToolRun
 from agent.tracing import NoopTracing, QuestionHandle, Tracing
@@ -84,6 +93,12 @@ class QueryRewritten(AgentEvent):
     relevant_documents: list[str]
     abbreviations: list[str]
     reason: str | None
+
+
+class GlossaryUsed(AgentEvent):
+    kind: Literal["glossary_used"] = "glossary_used"
+    expansions: list[Expansion] = Field(description="Расшифровки аббревиатур вопроса (FR-5)")
+    query: str = Field(description="Поисковый запрос с добавленными расшифровками")
 
 
 class CacheUsed(AgentEvent):
@@ -245,6 +260,19 @@ class AgentRunner:
             step.update(
                 output=rewritten.model_dump(exclude={"thinking"}), metadata={"thinking": rewritten.thinking}
             )
+        expansions: list[Expansion] = []
+        if rewritten.needs_search:
+            # FR-5 (б): аббревиатуры вопроса расшифровываются по глоссарию до поиска, запрос дополняется
+            expansions = await self._expand_abbreviations(question, rewritten)
+            if expansions:
+                rewritten = rewritten.model_copy(
+                    update={
+                        "query": expand_query(
+                            rewritten.query, expansions, chars=agent_settings.glossary.definition_chars
+                        )
+                    }
+                )
+                yield GlossaryUsed(expansions=expansions, query=rewritten.query)
         yield QueryRewritten(
             question=question,
             query=rewritten.query,
@@ -262,7 +290,10 @@ class AgentRunner:
         )
         notes = ""
         if rewritten.needs_search:
-            user_message = loop_user_message(question, rewritten.query, rewritten.queries)
+            user_message = with_glossary(
+                loop_user_message(question, rewritten.query, rewritten.queries),
+                [(item.term, item.definition) for item in expansions],
+            )
             cache_used = False
             if rewritten.relevant_documents and agent_settings.cached_evidence_chars:
                 cached, fragments, documents = render_cached_evidence(
@@ -447,6 +478,24 @@ class AgentRunner:
         return await rewriter.rewrite(
             question, session.memory.turns, session.registry.documents(), session.memory.summary
         )
+
+    async def _expand_abbreviations(self, question: str, rewritten: RewrittenQuery) -> list[Expansion]:
+        """Термины вопроса → расшифровки из глоссария (FR-5); бюджет вызовов инструментов не тратится."""
+        settings = self._config.agent.glossary
+        if not settings.enabled:
+            return []
+        terms = candidate_terms(question, rewritten.abbreviations, settings.max_terms)
+        if not terms:
+            return []
+        with self._tracing.step("glossary", kind="tool", input={"terms": terms}) as step:
+            found: list[Expansion] = []
+            for term in terms:
+                structured = await self._tools.lookup(TOOL_GLOSSARY, {"term": term})
+                expansion = first_expansion(term, structured)
+                if expansion is not None:
+                    found.append(expansion)
+            step.update(output=[item.model_dump() for item in found])
+        return found
 
     def _history(self, session: AgentSession) -> str:
         rewrite = self._config.agent.rewrite

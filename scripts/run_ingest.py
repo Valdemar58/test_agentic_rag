@@ -1,4 +1,4 @@
-"""Инжест корпуса (этап 4).
+"""Инжест корпуса (этап 4) и сборка глоссария (этап 8).
 
   uv run python scripts/run_ingest.py inspect [--corpus PATH] [--files]
       разбор архива экспорта без индексации: состав, хэши, файлы без карточки, роли файлов
@@ -9,7 +9,12 @@
       есть сканы; фаза 1 — разбор всех новых/изменённых файлов; затем vllm-dots останавливается и
       фаза 2 считает эмбеддинги bge-m3 на свободном GPU и пишет в Qdrant; реестр — PostgreSQL.
       --force переразбирает всё; --no-gpu-switch не трогает контейнеры (профили поднимает оператор);
-      --restore-runtime в конце поднимает профиль runtime обратно.
+      --restore-runtime в конце поднимает профиль runtime обратно и собирает глоссарий.
+
+  uv run python scripts/run_ingest.py glossary
+      сборка глоссария (FR-5) по уже построенному индексу: разделы «Термины и определения» и
+      «Сокращения» → коллекция Qdrant. Нужен поднятый профиль runtime: разделы подтверждает Qwen,
+      векторы записей считает bge-m3 на CPU.
 
 Код выхода: 0 — успех; 1 — часть файлов с ошибкой или не допущена; 2 — конфиг, архив или стенд.
 """
@@ -25,6 +30,7 @@ from pathlib import Path
 
 from qdrant_client import QdrantClient
 
+from agent.llm import build_llm, llm_ready
 from common.config import AppConfig, ConfigError, load_app_config
 from common.logs import configure_logging
 from common.settings import Settings, load_settings
@@ -33,6 +39,8 @@ from db.session import build_engine, build_sessionmaker
 from ingest.corpus import Corpus, CorpusError, load_corpus
 from ingest.embeddings import build_embedder
 from ingest.files import plan_corpus_files
+from ingest.glossary import GlossaryBuilder, GlossaryReport, LlmTermConfirmer
+from ingest.glossary_index import GlossaryIndex
 from ingest.index import ChunkIndex
 from ingest.parsing import DocumentParser
 from ingest.pipeline import IngestPipeline
@@ -124,6 +132,44 @@ class GpuOrchestrator:
         self._stack.up(RUNTIME, switch=True, wait=True)
 
 
+GLOSSARY_NO_LLM = (
+    "Глоссарий не собран: vLLM недоступен (нужен профиль runtime). "
+    "Поднимите стенд и выполните: uv run python scripts/run_ingest.py glossary"
+)
+
+
+async def build_glossary(config: AppConfig, settings: Settings, client: QdrantClient) -> GlossaryReport:
+    """Сборка глоссария по индексу (FR-5): подтверждение разделов Qwen, векторы bge-m3 на CPU."""
+    dense_dim = config.embedding.dense_dim
+    builder = GlossaryBuilder(
+        config.glossary,
+        source=ChunkIndex(client, config.qdrant, dense_dim),
+        store=GlossaryIndex(client, config.qdrant, dense_dim),
+        embedder=build_embedder(
+            config.models.local_path(config.models.embedding), config.embedding, ingest=False
+        ),
+        confirmer=LlmTermConfirmer(build_llm(config, settings, "glossary")),
+    )
+    return await builder.build()
+
+
+async def run_glossary(config: AppConfig, settings: Settings) -> int:
+    if not config.glossary.enabled:
+        print("Глоссарий выключен в конфиге (glossary.enabled = false)")
+        return EXIT_OK
+    client = QdrantClient(url=settings.resolve_qdrant_url(), timeout=int(config.qdrant.timeout_s))
+    try:
+        if not await llm_ready(config, settings, timeout_s=config.agent.llm.timeout_s):
+            print(GLOSSARY_NO_LLM)
+            return EXIT_CONFIG
+        report = await build_glossary(config, settings, client)
+    finally:
+        client.close()
+    for line in report.summary_lines():
+        print(line)
+    return EXIT_OK if report.unconfirmed == 0 else EXIT_ISSUES
+
+
 async def run_ingest(config: AppConfig, settings: Settings, corpus: Corpus, args: argparse.Namespace) -> int:
     engine = build_engine(settings.database_url)
     client = QdrantClient(url=settings.resolve_qdrant_url(), timeout=int(config.qdrant.timeout_s))
@@ -147,14 +193,27 @@ async def run_ingest(config: AppConfig, settings: Settings, corpus: Corpus, args
         orchestrator.before_parse(needs_vlm=work.needs_vlm)
         report = await runner.run(before_index=orchestrator.before_index)
         orchestrator.after_run(restore_runtime=args.restore_runtime)
+        glossary = await _glossary_phase(config, settings, client)
     finally:
         client.close()
         await engine.dispose()
     json_path, md_path = write_report(report, config.paths.work_dir_absolute)
     for line in report.summary_lines():
         print(line)
+    for line in glossary:
+        print(line)
     print(f"Отчёт: {md_path} и {json_path}")
     return EXIT_OK if report.failed == 0 and not report.issues else EXIT_ISSUES
+
+
+async def _glossary_phase(config: AppConfig, settings: Settings, client: QdrantClient) -> list[str]:
+    """Хвост прогона: глоссарий собирается, только если профиль runtime уже поднят (нужна Qwen)."""
+    if not config.glossary.enabled:
+        return []
+    if not await llm_ready(config, settings, timeout_s=config.agent.llm.timeout_s):
+        logger.warning(GLOSSARY_NO_LLM)
+        return [GLOSSARY_NO_LLM]
+    return (await build_glossary(config, settings, client)).summary_lines()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -173,6 +232,7 @@ def main(argv: list[str] | None = None) -> int:
     run_parser.add_argument("--force", action="store_true", help="переразобрать все файлы, игнорируя реестр")
     run_parser.add_argument("--no-gpu-switch", action="store_true", help="не управлять контейнерами стенда")
     run_parser.add_argument("--restore-runtime", action="store_true", help="в конце поднять профиль runtime")
+    subparsers.add_parser("glossary", help="собрать глоссарий по индексу (нужен профиль runtime)")
     args = parser.parse_args(argv)
     try:
         config = load_app_config(args.config)
@@ -180,6 +240,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ОШИБКА КОНФИГУРАЦИИ: {exc}")
         return EXIT_CONFIG
     configure_logging(config.logging.level)
+    if args.command == "glossary":
+        try:
+            return asyncio.run(run_glossary(config, load_settings()))
+        except StackError as exc:
+            print(f"ОШИБКА СТЕНДА: {exc}")
+            return EXIT_CONFIG
     corpus_root = args.corpus or config.paths.corpus_dir_absolute
     if args.command == "inspect":
         return inspect_corpus(corpus_root, config, show_files=args.files)

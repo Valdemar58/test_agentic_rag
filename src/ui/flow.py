@@ -27,6 +27,7 @@ from agent.runner import (
     AnswerRestarted,
     AnswerVerified,
     CacheUsed,
+    GlossaryUsed,
     LoopNotes,
     LoopText,
     QueryRewritten,
@@ -39,6 +40,7 @@ from ui.citations import Citation, citations_for
 from ui.state import message_metadata, turn_record
 
 REWRITE_KEY = "rewrite"
+GLOSSARY_KEY = "glossary"
 CACHE_KEY = "cache"
 NOTES_KEY = "notes"
 VERIFY_KEY = "verify"
@@ -46,6 +48,7 @@ REWRITE_TITLE = "Разбираю вопрос"
 NO_SEARCH_TITLE = "Поиск не нужен: отвечаю по истории диалога"
 UNCHANGED_TITLE = "Вопрос понят, ищу в документах"
 REWRITTEN_TITLE = "Запрос с учётом диалога: «{query}»"
+GLOSSARY_TITLE = "Расшифровываю по глоссарию: {terms}"
 CACHE_TITLE = "Использую ранее найденное: {aliases}"
 NOTES_TITLE = "Итоги поиска"
 VERIFY_TITLE = "Проверяю ответ по фрагментам"
@@ -164,6 +167,13 @@ def _rewrite_output(event: QueryRewritten) -> str | None:
     return "\n".join(lines) or None
 
 
+def _glossary_output(event: GlossaryUsed) -> str:
+    return "\n".join(
+        f"{item.term} — {item.definition}" + (f" ({item.doc_label})" if item.doc_label else "")
+        for item in event.expansions
+    )
+
+
 def _cache_output(event: CacheUsed, session: AgentSession) -> str:
     labels = []
     for alias in event.document_aliases:
@@ -189,6 +199,10 @@ async def run_question(runner: AgentRunner, session: AgentSession, question: str
         if isinstance(event, RunStarted):
             signal()
             yield StepStarted(key=REWRITE_KEY, title=REWRITE_TITLE)
+        elif isinstance(event, GlossaryUsed):
+            title = GLOSSARY_TITLE.format(terms=", ".join(item.term for item in event.expansions))
+            yield StepStarted(key=GLOSSARY_KEY, title=title)
+            yield StepFinished(key=GLOSSARY_KEY, title=title, output=_glossary_output(event))
         elif isinstance(event, QueryRewritten):
             yield StepFinished(key=REWRITE_KEY, title=_rewrite_title(event), output=_rewrite_output(event))
         elif isinstance(event, CacheUsed):
