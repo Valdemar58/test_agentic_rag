@@ -79,8 +79,10 @@ uv run python -m mcp_server                                 # MCP-сервер (
   только `CARD_SERVICE_URL` (и учётка `CARD_SERVICE_USERNAME`/`CARD_SERVICE_PASSWORD`).
 - MCP-сервер даёт агенту пять инструментов: `hybrid_search` (dense + sparse → RRF → reranker на CPU),
   `get_document_card`, `get_related_documents`, `get_document_content`, `glossary_lookup` (термин ищется
-  в коллекции `glossary` точным совпадением, затем векторами с проверкой похожести термина; записи
-  действующих документов первыми). Веса bge-m3 и reranker'а читаются из `models/`, работа офлайн.
+  в коллекции `glossary` точным совпадением, затем векторами с проверкой похожести термина: сокращение
+  требует точного совпадения — «ЛПУМГ» не получит определение «МГ», — у слова допускается другое
+  окончание, у словосочетания — вхождение; записи действующих документов первыми). Веса bge-m3 и
+  reranker'а читаются из `models/`, работа офлайн.
 - В Docker те же сервисы — `mcp-server` (профиль `runtime`) и `mock-card-service` (профиль `mock`,
   `stack.py up runtime` включает его по умолчанию, `--no-mock` — для стенда с реальным сервисом).
   Образ — `docker/Dockerfile.app`; внешний код монтируется томами из `TESSA_SDK_PATH` и

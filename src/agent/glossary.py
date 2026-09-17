@@ -19,6 +19,11 @@ from pydantic import BaseModel, Field
 # сокращение: две и более прописные буквы подряд, допускаются цифры и дефис («ПВТР», «1С:УАТ» → «УАТ»)
 ABBREVIATION_RE = re.compile(r"\b[А-ЯЁA-Z]{2}[А-ЯЁA-Z0-9-]{0,8}\b")
 ENTRIES_KEY = "entries"
+EDGE_CHARS = " ,;:.-–—"
+# служебные слова: на них обрезанная расшифровка обрываться не должна
+DANGLING_WORDS = frozenset(
+    "и или а но от до для с со в во к ко на по при из у о об за что как это его её их".split()
+)
 
 
 class Expansion(BaseModel):
@@ -59,9 +64,17 @@ def first_expansion(term: str, structured: Mapping[str, Any] | None) -> Expansio
 
 
 def short_definition(definition: str, chars: int) -> str:
-    """Расшифровка для запроса: первое предложение, не длиннее `chars` символов."""
+    """Расшифровка для запроса: первое предложение, не длиннее `chars` символов.
+
+    Обрыв на союзе или предлоге («…от места добычи или») в запрос не попадает: такие слова с конца
+    снимаются вместе со знаками."""
     text = definition.split(". ")[0].strip().rstrip(".")
-    return text if len(text) <= chars else text[:chars].rsplit(" ", 1)[0].rstrip(",;")
+    if len(text) > chars:
+        text = text[:chars].rsplit(" ", 1)[0]
+    words = text.split()
+    while words and words[-1].casefold().strip(EDGE_CHARS) in DANGLING_WORDS:
+        words.pop()
+    return " ".join(words).rstrip(EDGE_CHARS)
 
 
 def expand_query(query: str, expansions: Sequence[Expansion], *, chars: int) -> str:

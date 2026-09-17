@@ -304,6 +304,22 @@ def test_lookup_orders_active_first_and_drops_repeats() -> None:
     assert not matches("сиз", "пвтр", GLOSSARY.match_ratio)
 
 
+def test_short_terms_match_only_exactly() -> None:
+    """Живой диалог 2026-09-17: «ЛПУМГ» получал определение «МГ», «ЛПУ» — определение «ПУ»."""
+    ratio = GLOSSARY.match_ratio
+    assert not matches("лпумг", "мг", ratio), "сокращение не разбирается по частям"
+    assert not matches("лпу", "пу", ratio), "difflib на коротких словах даёт 0.8 — порога мало"
+    assert not matches("ос", "основные средства", ratio), "сокращение не ищется подстрокой в словах"
+    assert matches("мг", "мг", ratio)
+    # слова длиннее сокращения: разные окончания одного термина — это один термин
+    assert matches("документы", "документ", ratio)
+    assert not matches("документ", "докладная", ratio)
+    # словосочетания: вхождение и похожесть остаются, но одно слово в словосочетании — не совпадение
+    assert matches("средства индивидуальной защиты", "средства индивидуальной защиты работника", ratio)
+    assert matches("мобильные компрессорные станции", "мобильная компрессорная станция", ratio)
+    assert not matches("документы", "организационно-распорядительные документы", ratio)
+
+
 def test_lookup_survives_unavailable_collection() -> None:
     class Broken:
         def exists(self) -> bool:

@@ -79,6 +79,10 @@ def test_terms_and_query_expansion() -> None:
     )
     assert expand_query("отпуск", [], chars=120) == "отпуск"
     assert short_definition(f"{PVTR} Общества", 20) == "правила внутреннего"
+    # живой диалог 2026-09-17: расшифровка обрывалась на союзе («…от места добычи или»)
+    assert short_definition("сооружение для транспортировки газа от места добычи или", 45) == (
+        "сооружение для транспортировки газа от места"
+    )
 
 
 def test_first_expansion_reads_tool_result() -> None:

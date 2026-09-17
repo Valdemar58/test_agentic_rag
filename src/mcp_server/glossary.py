@@ -27,6 +27,10 @@ EMPTY_NOTE = "глоссарий ещё не построен (FR-5, этап 8)
 MISSING_NOTE = "термина «{term}» в глоссарии нет: ищи по самому термину через hybrid_search"
 EMPTY_TERM_NOTE = "пустой запрос: укажи термин или аббревиатуру"
 UNAVAILABLE_NOTE = "глоссарий недоступен: ищи по самому термину через hybrid_search"
+# короче этого термин считается сокращением: только точное совпадение, без вхождений и похожести
+MIN_STEM_CHARS = 5
+# «документы» и «документ»: одно слово с разным окончанием
+MAX_STEM_DIFF = 3
 
 
 class GlossaryEntry(BaseModel):
@@ -69,10 +73,25 @@ def _entry(record: GlossaryRecord) -> GlossaryEntry:
 
 
 def matches(key: str, candidate: str, ratio: float) -> bool:
-    """Термин записи отвечает запросу: вхождение в любую сторону или похожесть не ниже порога."""
+    """Термин записи отвечает запросу.
+
+    Короткий термин — сокращение, и для него годится только точное совпадение: живой диалог 2026-09-17
+    показал, что вхождение и похожесть дают чужое определение («ЛПУМГ» → «МГ», «ЛПУ» → «ПУ» с difflib
+    0.8). Для слов длиннее `MIN_STEM_CHARS` допускается разное окончание («документы» и «документ»),
+    для словосочетаний — вхождение («средства индивидуальной защиты» в «… защиты работника»). Вхождение
+    одного слова в словосочетание не считается совпадением: «документы» — не «организационно-
+    распорядительные документы». Всё остальное решает похожесть не ниже порога."""
     if not key or not candidate:
         return False
-    if key in candidate or candidate in key:
+    if key == candidate:
+        return True
+    short, long = (key, candidate) if len(key) <= len(candidate) else (candidate, key)
+    if len(short) < MIN_STEM_CHARS:
+        return False
+    if " " in short:
+        if short in long:
+            return True
+    elif " " not in long and long.startswith(short) and len(long) - len(short) <= MAX_STEM_DIFF:
         return True
     return difflib.SequenceMatcher(None, key, candidate).ratio() >= ratio
 
