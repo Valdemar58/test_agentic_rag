@@ -38,3 +38,6 @@ artifacts/
 .files/
 .langfuse/
 .claude/
+
+# Голден-сет по реальному корпусу: вопросы, эталоны и ID документов заказчика (пример формата — eval/golden_set.example.yaml)
+eval/golden_set.yaml
