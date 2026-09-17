@@ -321,3 +321,39 @@ def test_split_fixed_respects_limit_and_overlap_on_plain_text() -> None:
     long_sentence = " ".join(f"слово{i}" for i in range(300))
     pieces = chunker().split_fixed(long_sentence, 120)
     assert all(len(piece.split()) <= 120 for piece in pieces) and len(pieces) >= 3
+
+
+def test_paragraph_with_colon_keeps_its_list_entries_in_one_chunk() -> None:
+    """Живой диалог 2026-09-17: пункт «…45 минут в следующем диапазоне:» и его записи «начало… 12:00;»,
+    «окончание… 15:00.» лежали в разных чанках; ответ видел окно без длительности или наоборот."""
+    doc = DoclingDocument(name="правила")
+    doc.add_heading("Правила внутреннего распорядка", level=1)
+    doc.add_heading("6. Режим рабочего времени", level=2)
+    doc.add_text(
+        label=DocItemLabel.TEXT,
+        text="6.3. Работникам предоставляется перерыв для отдыха и питания продолжительностью 45 минут "
+        "в следующем диапазоне:",
+    )
+    doc.add_text(label=DocItemLabel.TEXT, text="начало диапазона для перерыва – 12 часов 00 минут;")
+    doc.add_text(label=DocItemLabel.TEXT, text="окончание диапазона для перерыва – 15 часов 00 минут.")
+    doc.add_text(label=DocItemLabel.TEXT, text="Перерыв в рабочее время не включается.")
+    doc.add_text(label=DocItemLabel.TEXT, text="6.4. Работодатель обеспечивает возможность приёма пищи:")
+    group = doc.add_list_group()
+    doc.add_list_item("в столовой", parent=group)
+    doc.add_list_item("в комнате приёма пищи", parent=group)
+    doc.add_text(label=DocItemLabel.TEXT, text="6.5. Выходные дни – суббота и воскресенье.")
+    chunks = chunker().chunk(doc, ROOT, file_sha256=SHA)
+
+    lunch = next(chunk for chunk in chunks if chunk.clause == "6.3")
+    assert "в следующем диапазоне:\nначало диапазона" in lunch.body
+    assert lunch.body.endswith("15 часов 00 минут."), "записи перечня — в чанке вводки"
+    assert "не включается" not in lunch.body, "запись с точкой закрыла перечень"
+    tail = next(chunk for chunk in chunks if chunk.body.startswith("Перерыв в рабочее время"))
+    assert tail.clause is None and tail.breadcrumbs == (ROOT[0], "Раздел 6. Режим рабочего времени")
+
+    meals = next(chunk for chunk in chunks if chunk.clause == "6.4")
+    assert meals.body == (
+        "6.4. Работодатель обеспечивает возможность приёма пищи:\nв столовой\nв комнате приёма пищи"
+    )
+    assert next(chunk for chunk in chunks if chunk.clause == "6.5").body.startswith("6.5.")
+    assert not any(chunk.body.startswith(("начало", "окончание", "в столовой")) for chunk in chunks)

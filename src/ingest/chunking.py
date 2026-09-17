@@ -21,6 +21,11 @@
 нумерованный перечень внутри приложения («1. Мастер…», «2. Специалист…») — записи одного чанка, а не
 пункты «п. 1», «п. 2». Строки оглавления (табуляция или отточие и номер страницы) пропускаются.
 
+Перечень после двоеточия (живой диалог 2026-09-17: «…45 минут в следующем диапазоне:» и строки «начало
+диапазона — 12:00; окончание — 15:00» оказались в разных чанках, и ответ терял условие): ненумерованные
+абзацы после абзаца с двоеточием наследуют его пункт и остаются в том же чанке, пока записи кончаются
+«;» или «,» либо идут элементами списка Docling; запись с точкой в конце закрывает перечень.
+
 `section_key` чанка — путь разделов без пункта: по нему собирается parent (задача 4.4).
 """
 
@@ -61,6 +66,8 @@ _BARE_NUMBER_RE = re.compile(r"^\s*(?:(\d+(?:\.\d+)+)\.?|(\d+)[.)])\s*$")
 # компонент из четырёх и более цифр — год или дата («04.09.2026»), а не номер пункта;
 # компонент с ведущим нулём — дата («07.09.26») или число («1.000»), номера пунктов так не пишут
 _LONG_COMPONENT_RE = re.compile(r"\d{4,}|(?:^|\.)0\d")
+LIST_OPENER = ":"
+LIST_CONTINUATION = (":", ";", ",")
 _HASHES_RE = re.compile(r"^\s*(#+)\s*")
 _SPACES_RE = re.compile(r"[ \t ]+")
 _SENTENCE_RE = re.compile(r"(?<=[.!?;])\s+(?=[«\"(A-ZА-ЯЁ0-9])|\n+")
@@ -93,6 +100,7 @@ class _Unit:
     level: int = 0
     number: str | None = None
     appendix: bool = False
+    list_item: bool = False
 
 
 @dataclass
@@ -106,6 +114,20 @@ class _Draft:
     page_no: int | None = None
     tokens: int = 0
     list_mode: bool = False
+    colon_list: bool = field(default=False, metadata={"doc": "В чанке есть абзац-вводка с двоеточием"})
+    open_list: bool = field(default=False, metadata={"doc": "Последняя запись перечня не закрыта точкой"})
+
+    def add(self, unit: _Unit, tokens: int) -> None:
+        self.parts.append(unit.text)
+        self.refs.extend(unit.refs)
+        self.tokens += tokens
+        tail = unit.text.rstrip()
+        self.colon_list = self.colon_list or tail.endswith(LIST_OPENER)
+        self.open_list = tail.endswith(LIST_CONTINUATION)
+
+    def continues_list(self, unit: _Unit) -> bool:
+        """Ненумерованный абзац после вводки с двоеточием — запись того же перечня."""
+        return self.colon_list and unit.number is None and (self.open_list or unit.list_item)
 
 
 @dataclass(frozen=True)
@@ -217,7 +239,16 @@ class StructuralChunker:
             if number is None and carried_number is not None:
                 number, text = carried_number, f"{carried_number}. {text}"
             carried_number = None
-            units.append(_Unit("paragraph", text, [item.self_ref], _page(item), number=number))
+            units.append(
+                _Unit(
+                    "paragraph",
+                    text,
+                    [item.self_ref],
+                    _page(item),
+                    number=number,
+                    list_item=label == "list_item",
+                )
+            )
         return units
 
     def _appendices(self, units: list[_Unit]) -> list[_Unit]:
@@ -361,13 +392,17 @@ class StructuralChunker:
                 )
                 chunks.extend(self._emit(table_draft, "table", "structural", file_sha256, len(chunks)))
                 continue
+            unit_tokens = self._count(unit.text)
+            if draft is not None and draft.continues_list(unit):
+                # записи перечня после «…в следующем диапазоне:» остаются в чанке вводки с её пунктом
+                draft.add(unit, unit_tokens)
+                continue
             clause = unit.number
             # внутри приложения «1. Мастер…», «2. Специалист…» — записи перечня, а не пункты документа
             list_entry = clause is not None and "." not in clause and any(item.appendix for item in stack)
             if list_entry:
                 clause = None
             crumbs = root_crumbs + section + ((f"{CLAUSE_PREFIX} {clause}",) if clause else ())
-            unit_tokens = self._count(unit.text)
             if draft is not None and (
                 draft.breadcrumbs != crumbs
                 or (draft.tokens >= self._settings.min_tokens and not (list_entry and draft.list_mode))
@@ -375,9 +410,7 @@ class StructuralChunker:
                 flush()
             if draft is None:
                 draft = _Draft(crumbs, section_key, heading, clause, page_no=unit.page_no)
-            draft.parts.append(unit.text)
-            draft.refs.extend(unit.refs)
-            draft.tokens += unit_tokens
+            draft.add(unit, unit_tokens)
             draft.list_mode = draft.list_mode or list_entry
         flush()
         return chunks
