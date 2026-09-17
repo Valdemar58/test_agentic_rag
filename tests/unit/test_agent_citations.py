@@ -105,6 +105,11 @@ def test_strip_model_links_block_only_when_it_is_a_list_of_markers() -> None:
     assert strip_model_sources("Ответ [S1].\nСсылки:\n[S1], [S2], [S1].") == "Ответ [S1]."
     assert strip_model_sources("Ответ [S1].\n\n**Ссылки:** [S1][S2][D1]") == "Ответ [S1]."
     assert strip_model_sources("Ответ.\nСсылки:\n[S1] Приказ №176 → Раздел 6\n[S2] Приказ №99") == "Ответ."
+    # живой прогон 2026-09-17: строки блока через дефис — «- [S6] (начало и окончание диапазона)»
+    assert (
+        strip_model_sources("Ответ [S6].\n\nСсылки:\n- [S6] (диапазон)\n- [S6] (продолжительность)")
+        == "Ответ [S6]."
+    )
     kept = "Ответ.\nСсылки на ПВТР в тексте приказа [S1].\nОни обязательны."
     assert strip_model_sources(kept) == kept
     prose = "Ответ.\nСсылки:\nсм. раздел 6 [S1]"

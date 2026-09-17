@@ -19,12 +19,15 @@ from agent.runner import (
     AgentSession,
     AnswerDelta,
     AnswerReady,
+    AnswerRestarted,
+    AnswerVerified,
     CacheUsed,
     LoopNotes,
     LoopText,
     QueryRewritten,
     ToolFinished,
     ToolStarted,
+    VerifyStarted,
 )
 from agent.service import build_runner
 from common.config import ConfigError, load_app_config
@@ -59,6 +62,20 @@ async def _ask(runner: AgentRunner, session: AgentSession, question: str) -> Non
         elif isinstance(event, AnswerDelta):
             # стрим содержит маркеры [S#]/[D#]; в консоли показываем готовый текст с номерами ссылок
             print(".", end="", flush=True)
+        elif isinstance(event, VerifyStarted):
+            print("\n· Проверяю ответ по фрагментам…", flush=True)
+        elif isinstance(event, AnswerRestarted):
+            print("· Черновик не подтверждён свидетельствами, составляю ответ заново…", flush=True)
+        elif isinstance(event, AnswerVerified):
+            if not event.parsed:
+                print("   ✗ проверка не выполнена, показан черновик", flush=True)
+            elif not event.problems:
+                print("   ✓ замечаний нет", flush=True)
+            else:
+                state = "исправлено" if event.corrected else "текст оставлен"
+                print(f"   ! замечаний {len(event.problems)}, {state}:", flush=True)
+                for problem in event.problems:
+                    print(f"     — {problem.claim}: {problem.reason}", flush=True)
         elif isinstance(event, AnswerReady):
             answer = event.answer
             print(f"\n\n{answer.text}", flush=True)
@@ -66,7 +83,8 @@ async def _ask(runner: AgentRunner, session: AgentSession, question: str) -> Non
                 print(f"(удалены ссылки без источника: {', '.join(answer.unresolved_markers)})", flush=True)
             print(
                 f"\n[{answer.seconds:.1f} с: поиск {answer.loop_seconds:.1f} с, "
-                f"ответ {answer.answer_seconds:.1f} с; вызовов инструментов {len(answer.tool_calls)}"
+                f"ответ {answer.answer_seconds:.1f} с, проверка {answer.verify_seconds:.1f} с; "
+                f"вызовов инструментов {len(answer.tool_calls)}"
                 + ("; бюджет исчерпан" if answer.budget_exhausted else "")
                 + ("; контекст исчерпан" if answer.context_exhausted else "")
                 + ("; отказ" if answer.refused else "")

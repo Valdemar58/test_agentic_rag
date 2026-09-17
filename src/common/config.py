@@ -309,7 +309,7 @@ class RetrievalSettings(StrictModel):
         return self
 
 
-LlmRole = Literal["rewrite", "tool_loop", "answer", "summary"]
+LlmRole = Literal["rewrite", "tool_loop", "answer", "verify", "summary"]
 
 
 class SamplingSettings(StrictModel):
@@ -333,6 +333,7 @@ class ThinkingSettings(StrictModel):
     rewrite: bool = Field(description="Разбор и переписывание запроса с учётом истории")
     tool_loop: bool = Field(description="Цикл выбора и вызова инструментов")
     answer: bool = Field(description="Итоговый ответ с самопроверкой и цитатами")
+    verify: bool = Field(description="Проверка черновика ответа по фрагментам")
     summary: bool = Field(description="Суммаризация старых сообщений диалога")
 
     def enabled(self, role: LlmRole) -> bool:
@@ -397,6 +398,21 @@ class AnswerSettings(StrictModel):
 
     evidence_max_chars: int = Field(gt=0, description="Бюджет всех свидетельств в промпте ответа")
     context_chars: int = Field(ge=0, description="Контекст раздела-родителя при каждом фрагменте")
+    empty_retries: int = Field(
+        ge=0, description="Сколько раз повторить шаг ответа, если модель вернула пустой текст"
+    )
+
+
+class VerifySettings(StrictModel):
+    """Проверка черновика ответа по фрагментам отдельным вызовом LLM (роль `verify`)."""
+
+    enabled: bool = Field(description="Выключено — черновик ответа уходит пользователю без проверки")
+    claim_match_ratio: float = Field(
+        gt=0, le=1, description="Похожесть замечания и предложения черновика, с которой оно вычёркивается"
+    )
+    retry_answer: int = Field(
+        ge=0, description="Сколько раз составить ответ заново с замечаниями, если отклонён весь черновик"
+    )
 
 
 class AgentSettings(StrictModel):
@@ -407,6 +423,7 @@ class AgentSettings(StrictModel):
     loop_timeout_s: float = Field(gt=0, description="Аварийный предел цикла инструментов")
     tool_output: ToolOutputSettings
     answer: AnswerSettings
+    verify: VerifySettings
     memory: MemorySettings
     session_document_cache: int = Field(ge=0, description="Кэш найденных документов в сессии (FR-6)")
     cached_evidence_chars: int = Field(
@@ -459,6 +476,10 @@ class UiSettings(StrictModel):
     host: str
     port: int = Field(ge=1, le=65535)
     title: str
+    llm_ready_wait_s: float = Field(
+        ge=0, description="Сколько ждать готовности vLLM перед вопросом, если модель ещё загружается"
+    )
+    llm_ready_poll_s: float = Field(gt=0, description="Интервал и тайм-аут одной проверки готовности vLLM")
 
 
 class LangfuseSettings(StrictModel):

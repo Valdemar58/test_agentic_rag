@@ -11,7 +11,7 @@ from agent.tracing import build_tracing
 from common.config import AppConfig, LlmRole
 from common.settings import Settings
 
-ROLES: tuple[LlmRole, ...] = ("rewrite", "tool_loop", "answer", "summary")
+ROLES: tuple[LlmRole, ...] = ("rewrite", "tool_loop", "answer", "verify", "summary")
 
 
 class RoleLlms:

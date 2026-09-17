@@ -69,7 +69,8 @@ def test_example_config_matches_tz_requirements() -> None:
     assert config.embedding.runtime_device == "cpu" and config.reranker.device == "cpu"  # §2
     # N9 (решение 2026-09-16): размышления выключены в цикле инструментов, включены в разборе и ответе
     assert config.agent.thinking.tool_loop is False and config.agent.thinking.rewrite is True
-    assert config.agent.thinking.answer is True
+    assert config.agent.thinking.answer is True and config.agent.thinking.verify is True
+    assert config.agent.verify.enabled is True and config.agent.llm_options("verify").enable_thinking
     assert config.agent.llm_options("tool_loop").enable_thinking is False
     assert config.agent.llm_options("answer").max_tokens == config.agent.llm.thinking_max_tokens
     assert config.eval.first_signal_budget_s == 5.0  # NFR-2

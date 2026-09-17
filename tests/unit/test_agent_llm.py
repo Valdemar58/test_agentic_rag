@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import httpx
+import respx
 from llama_index.core.base.llms.types import ChatMessage, TextBlock, ThinkingBlock
 
-from agent.llm import CHAT_TEMPLATE_KWARGS, EXTRA_BODY, build_llm, thinking_text
+from agent.llm import CHAT_TEMPLATE_KWARGS, EXTRA_BODY, build_llm, llm_ready, thinking_text
 from common.config import DEFAULT_CONFIG_PATH, load_app_config
 from common.settings import Settings
 
 CONFIG = load_app_config(DEFAULT_CONFIG_PATH)
-SETTINGS = Settings(_env_file=None)
+SETTINGS = Settings(_env_file=None, llm_base_url="http://llm.test/v1")
 
 
 def test_roles_get_thinking_mode_and_sampling_from_config() -> None:
@@ -54,3 +56,15 @@ def test_thinking_text_collects_thinking_blocks_only() -> None:
     )
     assert thinking_text(message) == "думаю\nещё"
     assert thinking_text(ChatMessage(role="assistant", content="ответ")) is None
+
+
+async def test_llm_ready_is_true_only_when_models_endpoint_answers() -> None:
+    """Пока vLLM грузит модель, порт не слушается — вопрос из UI должен ждать, а не падать (2026-09-17)."""
+    with respx.mock(assert_all_called=False) as router:
+        route = router.get("http://llm.test/v1/models")
+        route.mock(side_effect=httpx.ConnectError("connection refused"))
+        assert await llm_ready(CONFIG, SETTINGS, timeout_s=1) is False
+        route.mock(return_value=httpx.Response(503, json={"error": "loading"}))
+        assert await llm_ready(CONFIG, SETTINGS, timeout_s=1) is False
+        route.mock(return_value=httpx.Response(200, json={"object": "list", "data": [{"id": "qwen3-8b"}]}))
+        assert await llm_ready(CONFIG, SETTINGS, timeout_s=1) is True

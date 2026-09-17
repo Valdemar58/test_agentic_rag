@@ -13,6 +13,7 @@ import asyncio
 import logging
 import os
 import secrets
+from functools import partial
 from typing import Annotated, Any, Literal
 
 import chainlit as cl
@@ -25,13 +26,23 @@ from chainlit.utils import utc_now
 from fastapi import Depends, HTTPException
 from fastapi.responses import PlainTextResponse
 
+from agent.llm import llm_ready
 from agent.runner import AgentRunner, AgentSession
 from agent.service import build_runner
 from common.config import load_app_config
 from common.logs import configure_logging
 from common.settings import load_settings
 from ui.data_layer import ELEMENT_CONTENT_ROUTE, AppDataLayer, parse_id
-from ui.flow import Final, StepFinished, StepStarted, Token, UiEvent, run_question
+from ui.flow import (
+    Final,
+    Restart,
+    StepFinished,
+    StepStarted,
+    Token,
+    UiEvent,
+    run_question,
+    wait_until_ready,
+)
 from ui.persistence import ConversationStore
 from ui.state import restore_session
 
@@ -57,6 +68,13 @@ OIDC_ENV = (
 )
 STAND_ERROR = "Стенд недоступен: {error}. Нужны MCP-сервер и vLLM профиля runtime."
 ANSWER_ERROR = "Не удалось получить ответ: {error}"
+LLM_KEY = "llm"
+LLM_LOADING_TITLE = "Модель ещё загружается, жду готовности"
+LLM_READY_TITLE = "Модель готова"
+LLM_NOT_READY_TITLE = "Модель не готова"
+LLM_NOT_READY = (
+    "Модель ещё загружается или vLLM недоступен: ответить сейчас нельзя. Повторите вопрос через минуту."
+)
 
 _store = ConversationStore.from_settings(SETTINGS)
 _runner: AgentRunner | None = None
@@ -184,6 +202,10 @@ class ChainlitPresenter:
             if self._message is None:
                 self._message = cl.Message(content="")
             await self._message.stream_token(event.text)
+        elif isinstance(event, Restart):
+            if self._message is not None:
+                self._message.content = ""
+                await self._message.update()
         elif isinstance(event, Final):
             message = self._message if self._message is not None else cl.Message(content="")
             message.content = event.text
@@ -217,11 +239,30 @@ async def on_message(message: Any) -> None:
         return
     presenter = ChainlitPresenter()
     try:
+        if not await _ensure_llm_ready(presenter):
+            return
         async for event in run_question(runner, session, str(message.content)):
             await presenter.handle(event)
     except Exception as exc:  # noqa: BLE001 — ошибка одного вопроса не должна ронять сессию
         logger.exception("Ошибка при ответе на вопрос")
         await presenter.fail(ANSWER_ERROR.format(error=exc))
+
+
+async def _ensure_llm_ready(presenter: ChainlitPresenter) -> bool:
+    """После перезапуска стенда vLLM грузит модель дольше, чем поднимается UI: ждём шагом, а не ошибкой."""
+    probe = partial(llm_ready, CONFIG, SETTINGS, timeout_s=CONFIG.ui.llm_ready_poll_s)
+    if await probe():
+        return True
+    await presenter.handle(StepStarted(key=LLM_KEY, title=LLM_LOADING_TITLE))
+    ready = await wait_until_ready(
+        probe, timeout_s=CONFIG.ui.llm_ready_wait_s, poll_s=CONFIG.ui.llm_ready_poll_s
+    )
+    await presenter.handle(
+        StepFinished(key=LLM_KEY, title=LLM_READY_TITLE if ready else LLM_NOT_READY_TITLE, ok=ready)
+    )
+    if not ready:
+        await cl.ErrorMessage(content=LLM_NOT_READY).send()
+    return ready
 
 
 # ---------- фидбэк (FR-7): запись в БД делает data layer, здесь — score в Langfuse ----------

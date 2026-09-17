@@ -41,6 +41,9 @@ class TurnRecord(BaseModel):
     seconds: float = 0.0
     loop_seconds: float = 0.0
     answer_seconds: float = 0.0
+    verify_seconds: float = 0.0
+    verify_problems: int = Field(default=0, description="Замечаний проверки черновика по свидетельствам")
+    verify_corrected: bool = Field(default=False, description="Ответ заменён исправленным текстом проверки")
     first_signal_s: float | None = Field(default=None, description="Первый видимый сигнал, с (AC-7.1)")
 
 
@@ -58,6 +61,9 @@ def turn_record(answer: Answer, session: AgentSession, *, first_signal_s: float 
         seconds=round(answer.seconds, 3),
         loop_seconds=round(answer.loop_seconds, 3),
         answer_seconds=round(answer.answer_seconds, 3),
+        verify_seconds=round(answer.verify_seconds, 3),
+        verify_problems=len(answer.verification.problems) if answer.verification else 0,
+        verify_corrected=bool(answer.verification and answer.verification.corrected),
         first_signal_s=round(first_signal_s, 3) if first_signal_s is not None else None,
     )
 

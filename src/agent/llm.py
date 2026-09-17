@@ -14,6 +14,7 @@ from typing import Any
 
 from llama_index.core.base.llms.types import ChatMessage, ThinkingBlock
 from llama_index.llms.openai_like import OpenAILike
+from openai import AsyncOpenAI, OpenAIError
 
 from common.config import AppConfig, LlmRequestOptions, LlmRole
 from common.settings import Settings
@@ -48,6 +49,26 @@ def build_llm(config: AppConfig, settings: Settings, role: LlmRole) -> OpenAILik
         strict=False,
         additional_kwargs=request_kwargs(options),
     )
+
+
+async def llm_ready(config: AppConfig, settings: Settings, *, timeout_s: float) -> bool:
+    """Готов ли vLLM отвечать: список моделей отдаётся без ошибки.
+
+    Пока модель загружается после перезапуска стенда, сервер не слушает порт, и запрос падает ошибкой
+    соединения (живой диалог 2026-09-17: вопрос из UI в это окно получил «Connection error»)."""
+    client = AsyncOpenAI(
+        base_url=settings.resolve_llm_base_url(config),
+        api_key=settings.llm_api_key.get_secret_value(),
+        timeout=timeout_s,
+        max_retries=0,
+    )
+    try:
+        await client.models.list()
+    except OpenAIError:
+        return False
+    finally:
+        await client.close()
+    return True
 
 
 def thinking_text(message: ChatMessage) -> str | None:

@@ -26,9 +26,9 @@ ALIAS_IN_GROUP_RE = re.compile(r"[DS]\d+")
 BARE_DOC_RE = re.compile(r"(?<![\[\w])(D\d+)(?![\]\w])")
 # блок «Источники», который модель иногда дописывает сама, — до конца текста
 MODEL_SOURCES_RE = re.compile(r"\n[ \t]*(?:\*\*|#+\s*)?Источники\s*:?(?:\*\*)?[ \t]*\n.*\Z", re.DOTALL)
-# блок «Ссылки: [S1][S2]» или «Ссылки:\n[S1] Приказ…» в конце ответа — дубль блока «Источники»
+# блок «Ссылки: [S1][S2]», «Ссылки:\n[S1] Приказ…», «Ссылки:\n- [S1] (…)» в конце ответа — дубль «Источников»
 MODEL_LINKS_RE = re.compile(r"\n[ \t]*(?:\*\*|#+\s*)?Ссылки\s*:?(?:\*\*)?[ \t]*(?P<rest>.*)\Z", re.DOTALL)
-LINK_LINE_RE = re.compile(r"^\[[^\]]*\]")
+LINK_LINE_RE = re.compile(r"^(?:[-–—•*]\s*)?\[[^\]]*\]")
 SourceKind = Literal["fragment", "document"]
 
 

@@ -26,6 +26,8 @@ from agent.runner import (
     AgentRunner,
     AgentSession,
     AnswerReady,
+    AnswerRestarted,
+    AnswerVerified,
     CacheUsed,
     LoopText,
     QueryRewritten,
@@ -56,6 +58,7 @@ CARDS_URL = "http://cards.test"
 ORDER_109 = stable_uuid("agent", "order109")
 QUERY = "отчёт по охране труда до пятого числа"
 TODAY = dt.date(2026, 9, 16)
+VERIFY_OK = '{"problems": []}'
 
 
 @dataclass
@@ -71,6 +74,7 @@ class Harness:
         answer_steps: list[str],
         rewrite_steps: list[str] | None = None,
         summary_steps: list[str] | None = None,
+        verify_steps: list[str] | None = None,
         config: AppConfig = CONFIG,
         tracing: Tracing | None = None,
     ) -> AgentRunner:
@@ -80,6 +84,8 @@ class Harness:
             # без сценария переписывание отдаёт не-JSON и поиск идёт по исходному вопросу
             "rewrite": ScriptedLLM(steps=rewrite_steps or []),
             "summary": ScriptedLLM(steps=summary_steps or []),
+            # без сценария проверка черновика замечаний не находит
+            "verify": ScriptedLLM(steps=verify_steps or [], fallback=VERIFY_OK),
         }
 
         def factory(role: LlmRole) -> ScriptedLLM:
@@ -153,6 +159,8 @@ async def test_search_then_answer_with_aliases_and_events(harness: Harness) -> N
         "tool_finished",
         "loop_notes",
         "answer_delta",
+        "verify_started",
+        "answer_verified",
         "answer_ready",
     ]
     started, finished = events[2], events[3]
@@ -188,11 +196,19 @@ async def test_search_then_answer_with_aliases_and_events(harness: Harness) -> N
         and "[S1] D1 Приказ №144 от 15.01.2026 (действует" in tool_text
     )
     assert harness.order_id not in tool_text
-    # LLM ответа получает вопрос, заметки и свидетельства со статусами; в системном промпте — правило отказа
+    # LLM ответа получает свидетельства со статусами, ориентир из заметок и вопрос; в системном промпте —
+    # правило отказа; проверка черновика без замечаний ответ не меняет
     system, user = harness.llms["answer"].inputs[0]
     assert NO_ANSWER_PHRASE in str(system.content) and "[S1]" in str(system.content)
-    assert "Вопрос пользователя: Когда сдаётся отчёт" in str(user.content)
-    assert "[S1] (D1, действует)" in str(user.content) and "Заметки агента" in str(user.content)
+    assert str(user.content).endswith("Вопрос пользователя: Когда сдаётся отчёт по охране труда?")
+    assert "[S1] (D1, действует)" in str(user.content) and "Ориентир шага поиска" in str(user.content)
+    assert "D1 (S1) отвечает на вопрос, документ действует." in str(user.content)
+    verified = events[-2]
+    assert isinstance(verified, AnswerVerified) and verified.parsed and not verified.problems
+    assert answer.verification is not None and not answer.verification.corrected
+    verify_user = str(harness.llms["verify"].inputs[0][1].content)
+    assert "Черновик ответа:\nОтчёт по охране труда сдаётся до пятого числа [S1]." in verify_user
+    assert "[S1] (D1, действует)" in verify_user
 
 
 async def test_aliases_resolve_to_ids_and_evidence_accumulates(harness: Harness) -> None:
@@ -413,12 +429,18 @@ async def test_question_is_traced_as_rewrite_loop_and_answer_steps(harness: Harn
         ("rewrite", "chain"),
         ("tool_loop", "agent"),
         ("answer", "chain"),
+        ("verify", "chain"),
     ]
-    rewrite, loop, compose = tracing.steps
+    rewrite, loop, compose, verify = tracing.steps
     assert rewrite["output"]["query"] == "срок сдачи отчёта по охране труда"
     assert "Поисковый запрос с учётом диалога: срок сдачи отчёта" in loop["input"]
     assert loop["output"]["tool_calls"][0]["query"] == QUERY and loop["metadata"]["search_queries"] == [QUERY]
-    assert compose["output"] == "Отчёт сдаётся до пятого числа [1]." and compose["metadata"]["sources"] == 1
+    # шаг ответа хранит черновик с маркерами, шаг проверки — замечания, корень трейса — готовый текст
+    assert compose["output"] == "Отчёт сдаётся до пятого числа [S1]."
+    assert compose["input"]["notes"] == "Заметки: D1."
+    assert verify["input"] == {"draft": "Отчёт сдаётся до пятого числа [S1]."}
+    assert verify["output"] == {"problems": [], "answer": None} and verify["metadata"]["corrected"] is False
+    assert root["metadata"]["verified"] is True and root["metadata"]["unresolved"] == []
 
 
 async def test_repeated_calls_and_relation_type_filter_do_not_spend_budget(harness: Harness) -> None:
@@ -513,6 +535,8 @@ async def test_loop_without_search_gets_forced_search_and_second_pass(harness: H
         "tool_finished",
         "loop_notes",
         "answer_delta",
+        "verify_started",
+        "answer_verified",
         "answer_ready",
     ]
     note = events[2]
@@ -535,6 +559,7 @@ async def test_loop_without_search_gets_forced_search_and_second_pass(harness: H
         "forced_search",
         "tool_loop",
         "answer",
+        "verify",
     ]
     assert tracing.steps[2]["output"]["fragments"][0] == "S1"
 
@@ -587,3 +612,175 @@ async def test_forced_search_without_hits_leads_to_honest_refusal(harness: Harne
     assert answer.tool_calls[0].ok and answer.fragment_aliases == []
     assert answer.notes == NO_HITS_NOTES and answer.refused
     assert len(harness.llms["tool_loop"].inputs) == 1, "без находок второй проход цикла не нужен"
+
+
+LUNCH_NOTES = (
+    "— перерыв для отдыха и питания 45 минут в диапазоне с 12:00 до 15:00 [S1]\n"
+    "Таким образом, вернуться с обеда нужно не позднее 13:00.\n"
+    "Отчёт сдаётся до пятого числа [S1]. Продолжительность перерыва не включается в рабочее время."
+)
+LUNCH_DRAFT = "Вернуться нужно не позднее 13:00 [S1]. Перерыв длится 45 минут [S1]."
+LUNCH_FIXED = "Перерыв длится 45 минут [S1]."
+LUNCH_CLAIM = "Вернуться нужно не позднее 13:00 [S1]."
+LUNCH_VERDICT = (
+    f'{{"problems": [{{"claim": "{LUNCH_CLAIM}", "reason": "во фрагменте нет времени возвращения"}}]}}'
+)
+
+
+async def test_unsupported_claim_is_corrected_by_the_verifier(harness: Harness) -> None:
+    """Живой диалог 2026-09-17: вывод заметок «не позднее 13:00» дошёл до ответа как факт документа.
+
+    В промпт ответа из заметок попадают только предложения с псевдонимами и без вводных слов вывода,
+    а черновик ответа проверяется по свидетельствам: неподтверждённое предложение вычёркивается."""
+    tracing = RecordingTracing()
+    runner = harness.runner(
+        [tool_step(TOOL_SEARCH, query=QUERY), LUNCH_NOTES],
+        [LUNCH_DRAFT],
+        verify_steps=[LUNCH_VERDICT],
+        tracing=tracing,
+    )
+    events = [event async for event in runner.run("Когда вернуться с обеда?", harness.session())]
+    ready = events[-1]
+    assert isinstance(ready, AnswerReady)
+    answer = ready.answer
+    assert answer.text.startswith(f"{LUNCH_FIXED.replace('[S1]', '[1]')}\n\nИсточники:\n[1] Приказ №144")
+    assert answer.verification is not None and answer.verification.corrected
+    assert [(p.claim, p.action) for p in answer.verification.problems] == [(LUNCH_CLAIM, "removed")]
+    assert answer.verify_seconds >= 0 and answer.notes == LUNCH_NOTES, "заметки целиком остаются в ответе"
+    verified = next(event for event in events if isinstance(event, AnswerVerified))
+    assert verified.corrected and verified.parsed and len(verified.problems) == 1
+    # ориентир для ответа: строка с выводом и предложение без псевдонима отброшены
+    answer_user = str(harness.llms["answer"].inputs[0][1].content)
+    assert "45 минут в диапазоне с 12:00 до 15:00 [S1]" in answer_user
+    assert "Таким образом" not in answer_user and "не включается в рабочее время" not in answer_user
+    assert "Отчёт сдаётся до пятого числа [S1]." in answer_user
+    # проверяющий видел черновик, свидетельства и вопрос; в трейсе — черновик, замечания и замена
+    verify_user = str(harness.llms["verify"].inputs[0][1].content)
+    assert verify_user.endswith(f"Черновик ответа:\n{LUNCH_DRAFT}") and "[S1] (D1, действует)" in verify_user
+    verify = next(step for step in tracing.steps if step["name"] == "verify")
+    assert verify["input"] == {"draft": LUNCH_DRAFT} and verify["output"]["answer"] == LUNCH_FIXED
+    assert verify["output"]["problems"][0]["claim"] == LUNCH_CLAIM
+    assert tracing.questions[0]["metadata"]["corrected"] is True
+    assert answer.text == tracing.questions[0]["output"]["answer"]
+
+
+async def test_verifier_failures_keep_the_draft_and_refusals_are_not_verified(harness: Harness) -> None:
+    draft = "Отчёт сдаётся до пятого числа [S1]."
+    loop = [tool_step(TOOL_SEARCH, query=QUERY), "Заметки [S1]."]
+    garbage = harness.runner(loop, [draft], verify_steps=["не JSON"])
+    answer = await garbage.ask("Когда отчёт?", harness.session())
+    assert answer.text.startswith("Отчёт сдаётся до пятого числа [1].")
+    assert answer.verification is not None and not answer.verification.parsed
+    assert not answer.verification.corrected and answer.verification.problems == []
+
+    # замечание к единственному предложению: вычёркивание опустошило бы ответ — после повтора остаётся
+    # черновик, замечания сохраняются
+    whole = f'{{"problems": [{{"claim": "{draft}", "reason": "нет срока"}}]}}'
+    kept = harness.runner(loop, [draft, draft], verify_steps=[whole, whole])
+    answer = await kept.ask("Когда отчёт?", harness.session())
+    assert answer.text.startswith("Отчёт сдаётся до пятого числа [1].")
+    assert answer.verification is not None and answer.verification.parsed
+    assert not answer.verification.corrected and answer.verification.emptied
+    assert [(p.claim, p.action) for p in answer.verification.problems] == [(draft, "kept")]
+
+    # отказ не проверяется, проверяющий не вызывается
+    refusal = harness.runner(loop, [f"{NO_ANSWER_PHRASE}. Срока нет."])
+    answer = await refusal.ask("Когда отчёт?", harness.session())
+    assert answer.refused and answer.verification is None and not harness.llms["verify"].inputs
+
+    # проверка выключена конфигом — черновик уходит как есть, событий проверки нет
+    no_verify = CONFIG.agent.verify.model_copy(update={"enabled": False})
+    disabled = CONFIG.model_copy(update={"agent": CONFIG.agent.model_copy(update={"verify": no_verify})})
+    plain = harness.runner(loop, [draft], verify_steps=[LUNCH_VERDICT], config=disabled)
+    events = [event async for event in plain.run("Когда отчёт?", harness.session(disabled))]
+    assert not any(isinstance(event, AnswerVerified) for event in events)
+    ready = events[-1]
+    assert isinstance(ready, AnswerReady) and ready.answer.verification is None
+    assert not harness.llms["verify"].inputs
+
+
+async def test_empty_answer_is_retried_once_before_giving_up(harness: Harness) -> None:
+    """Живой прогон 2026-09-17: размышления съели весь лимит токенов, текст ответа пуст (55 с впустую)."""
+    tracing = RecordingTracing()
+    loop = [tool_step(TOOL_SEARCH, query=QUERY), "Заметки [S1]."]
+    runner = harness.runner(loop, ["", "Отчёт сдаётся до пятого числа [S1]."], tracing=tracing)
+    answer = await runner.ask("Когда отчёт?", harness.session())
+    assert answer.text.startswith("Отчёт сдаётся до пятого числа [1].")
+    assert len(harness.llms["answer"].inputs) == 2, "шаг ответа повторён один раз"
+    compose = next(step for step in tracing.steps if step["name"] == "answer")
+    assert compose["metadata"]["attempts"] == 2
+
+    hopeless = harness.runner(loop, ["", "   ", "не должно вызываться [S1]."])
+    answer = await hopeless.ask("Когда отчёт?", harness.session())
+    assert answer.text == "" and len(harness.llms["answer"].inputs) == 2 and answer.verification is None
+
+
+async def test_fully_rejected_draft_is_recomposed_once_with_the_remarks(harness: Harness) -> None:
+    """Живой прогон 2026-09-17: весь черновик («вернуться в 12:45» от начала окна) не подтверждён —
+    вычёркивать нечего, ответ составляется заново с замечаниями проверки, второй черновик тоже проверяется."""
+    tracing = RecordingTracing()
+    wrong = "Вернуться нужно в 12:45 [S1]."
+    right = "Отчёт сдаётся до пятого числа [S1]."
+    reject_all = f'{{"problems": [{{"claim": "{wrong}", "reason": "во фрагменте нет 12:45"}}]}}'
+    runner = harness.runner(
+        [tool_step(TOOL_SEARCH, query=QUERY), "Заметки [S1]."],
+        [wrong, right],
+        verify_steps=[reject_all, VERIFY_OK],
+        tracing=tracing,
+    )
+    events = [event async for event in runner.run("Когда вернуться, если ушёл в 12:45?", harness.session())]
+    assert [event.kind for event in events][-8:] == [
+        "answer_delta",
+        "verify_started",
+        "answer_verified",
+        "answer_restarted",
+        "answer_delta",
+        "verify_started",
+        "answer_verified",
+        "answer_ready",
+    ]
+    ready = events[-1]
+    assert isinstance(ready, AnswerReady)
+    answer = ready.answer
+    assert answer.text.startswith("Отчёт сдаётся до пятого числа [1].")
+    assert answer.verification is not None and not answer.verification.emptied
+    assert answer.verification.problems == []
+    restarted = next(event for event in events if isinstance(event, AnswerRestarted))
+    assert [problem.action for problem in restarted.problems] == ["kept"]
+    verified = [event for event in events if isinstance(event, AnswerVerified)]
+    assert [event.attempt for event in verified] == [1, 2]
+    second_prompt = str(harness.llms["answer"].inputs[1][1].content)
+    assert "проверка отклонила целиком" in second_prompt and wrong in second_prompt
+    assert "во фрагменте нет 12:45" in second_prompt and NO_ANSWER_PHRASE in second_prompt
+    names = [step["name"] for step in tracing.steps]
+    assert names == ["rewrite", "tool_loop", "answer", "verify", "answer", "verify"]
+    assert tracing.steps[2]["input"]["feedback"] == []
+    assert tracing.steps[4]["input"]["feedback"] == [(wrong, "во фрагменте нет 12:45")]
+
+    # повтор один: второй отклонённый черновик уходит как есть, с замечаниями
+    stubborn = harness.runner(
+        [tool_step(TOOL_SEARCH, query=QUERY), "Заметки [S1]."],
+        [wrong, wrong],
+        verify_steps=[reject_all, reject_all],
+    )
+    answer = await stubborn.ask("Когда вернуться, если ушёл в 12:45?", harness.session())
+    assert answer.text.startswith("Вернуться нужно в 12:45 [1].")
+    assert len(harness.llms["answer"].inputs) == 2
+    assert answer.verification is not None and answer.verification.emptied
+
+
+async def test_model_links_block_is_stripped_before_verification(harness: Harness) -> None:
+    """Живой прогон 2026-09-17: после вычёркивания всего черновика оставалась строка «Ссылки: [S6]»,
+    она сходила за текст со ссылкой, и повтор ответа не запускался."""
+    wrong = "Вернуться нужно в 12:45 [S1]."
+    reject_all = f'{{"problems": [{{"claim": "{wrong}", "reason": "во фрагменте нет 12:45"}}]}}'
+    runner = harness.runner(
+        [tool_step(TOOL_SEARCH, query=QUERY), "Заметки [S1]."],
+        [f"{wrong}\n\nСсылки: [S1]", "Отчёт сдаётся до пятого числа [S1].\n\n**Ссылки:** [S1]"],
+        verify_steps=[reject_all, VERIFY_OK],
+    )
+    answer = await runner.ask("Когда вернуться, если ушёл в 12:45?", harness.session())
+    assert answer.text.startswith("Отчёт сдаётся до пятого числа [1].\n\nИсточники:")
+    assert len(harness.llms["answer"].inputs) == 2, "весь черновик отклонён — ответ составлен заново"
+    for messages in harness.llms["verify"].inputs:
+        assert "Ссылки" not in str(messages[1].content)

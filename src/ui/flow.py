@@ -3,13 +3,16 @@
 Не зависит от Chainlit: `ui.app` переводит события в шаги и сообщения, тесты читают их напрямую.
 Первый видимый сигнал (AC-7.1) — шаг «Разбираю вопрос»: он появляется сразу, до первого вызова LLM.
 Заголовки шагов — те же человекочитаемые статусы, что в консоли, с итогом после стрелки
-(«Ищу: «…» → Найдено фрагментов: 5, документов: 2»).
+(«Ищу: «…» → Найдено фрагментов: 5, документов: 2»). Проверка черновика ответа по фрагментам — шаг после
+стрима: готовое сообщение получает исправленный текст, если проверяющий нашёл неподтверждённые утверждения.
+Ожидание готовности vLLM (модель ещё загружается после перезапуска стенда) — здесь же, без Chainlit.
 """
 
 from __future__ import annotations
 
+import asyncio
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -21,6 +24,8 @@ from agent.runner import (
     Answer,
     AnswerDelta,
     AnswerReady,
+    AnswerRestarted,
+    AnswerVerified,
     CacheUsed,
     LoopNotes,
     LoopText,
@@ -28,6 +33,7 @@ from agent.runner import (
     RunStarted,
     ToolFinished,
     ToolStarted,
+    VerifyStarted,
 )
 from ui.citations import Citation, citations_for
 from ui.state import message_metadata, turn_record
@@ -35,16 +41,68 @@ from ui.state import message_metadata, turn_record
 REWRITE_KEY = "rewrite"
 CACHE_KEY = "cache"
 NOTES_KEY = "notes"
+VERIFY_KEY = "verify"
 REWRITE_TITLE = "Разбираю вопрос"
 NO_SEARCH_TITLE = "Поиск не нужен: отвечаю по истории диалога"
 UNCHANGED_TITLE = "Вопрос понят, ищу в документах"
 REWRITTEN_TITLE = "Запрос с учётом диалога: «{query}»"
 CACHE_TITLE = "Использую ранее найденное: {aliases}"
 NOTES_TITLE = "Итоги поиска"
+VERIFY_TITLE = "Проверяю ответ по фрагментам"
+VERIFY_OK_TITLE = "Проверка ответа: замечаний нет"
+VERIFY_FIXED_TITLE = "Проверка ответа: вычеркнуто неподтверждённое, замечаний — {count}"
+VERIFY_KEPT_TITLE = "Проверка ответа: замечаний — {count}, текст оставлен"
+VERIFY_FAILED_TITLE = "Проверка ответа не выполнена: показан черновик"
+RESTART_KEY = "restart"
+RESTART_TITLE = "Черновик не подтверждён свидетельствами, составляю ответ заново"
+ACTION_LABELS = {"removed": "вычеркнуто", "kept": "оставлено", "unmatched": "в тексте не найдено"}
+
+
+def verify_key(attempt: int) -> str:
+    return VERIFY_KEY if attempt <= 1 else f"{VERIFY_KEY}-{attempt}"
+
+
 QUERIES_HEADER = "Отдельные поисковые запросы:"
 ABBREVIATIONS_LINE = "Аббревиатуры: {items}"
 REASON_LINE = "Пояснение: {reason}"
 ARROW = " → "
+
+
+def verify_title(event: AnswerVerified) -> str:
+    if not event.parsed:
+        return VERIFY_FAILED_TITLE
+    if not event.problems:
+        return VERIFY_OK_TITLE
+    template = VERIFY_FIXED_TITLE if event.corrected else VERIFY_KEPT_TITLE
+    return template.format(count=len(event.problems))
+
+
+def verify_output(event: AnswerVerified) -> str | None:
+    lines = [
+        f"— {problem.claim}"
+        + (f": {problem.reason}" if problem.reason else "")
+        + f" ({ACTION_LABELS.get(problem.action, problem.action)})"
+        for problem in event.problems
+    ]
+    return "\n".join(lines) or None
+
+
+async def wait_until_ready(
+    probe: Callable[[], Awaitable[bool]],
+    *,
+    timeout_s: float,
+    poll_s: float,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    clock: Callable[[], float] = time.perf_counter,
+) -> bool:
+    """Опрашивает готовность LLM до успеха или истечения `timeout_s`; первая проверка — сразу."""
+    deadline = clock() + timeout_s
+    while True:
+        if await probe():
+            return True
+        if clock() >= deadline:
+            return False
+        await sleep(poll_s)
 
 
 class UiEvent(BaseModel):
@@ -68,6 +126,12 @@ class StepFinished(UiEvent):
 class Token(UiEvent):
     kind: Literal["token"] = "token"
     text: str
+
+
+class Restart(UiEvent):
+    """Стрим начинается заново: показанный черновик отклонён проверкой, сообщение очищается."""
+
+    kind: Literal["restart"] = "restart"
 
 
 class Final(UiEvent):
@@ -152,6 +216,19 @@ async def run_question(runner: AgentRunner, session: AgentSession, question: str
         elif isinstance(event, AnswerDelta):
             signal()
             yield Token(text=event.text)
+        elif isinstance(event, VerifyStarted):
+            yield StepStarted(key=verify_key(event.attempt), title=VERIFY_TITLE)
+        elif isinstance(event, AnswerVerified):
+            yield StepFinished(
+                key=verify_key(event.attempt),
+                title=verify_title(event),
+                output=verify_output(event),
+                ok=event.parsed,
+            )
+        elif isinstance(event, AnswerRestarted):
+            yield StepStarted(key=RESTART_KEY, title=RESTART_TITLE)
+            yield StepFinished(key=RESTART_KEY, title=RESTART_TITLE)
+            yield Restart()
         elif isinstance(event, AnswerReady):
             answer = event.answer
             record = turn_record(answer, session, first_signal_s=first_signal)
