@@ -8,7 +8,7 @@
                                                синхронизация приказов (вне ТЗ, запрос заказчика):
                                                перечень берётся из представления (секция orders
                                                конфига), уже выгруженные карточки пропускаются,
-                                               состояния из orders.exclude_state_ids не грузятся
+                                               грузятся только состояния orders.include_state_ids
   tessa-export views --config config.yaml [--alias ALIAS] [--rows N]
                                                какие представления доступны учётной записи; с
                                                --alias — колонки, параметры и первые строки
@@ -49,7 +49,7 @@ from tessa_export.models import (
     TessaGateway,
     TessaViewGateway,
 )
-from tessa_export.orders import collect_orders, state_exclude_rule
+from tessa_export.orders import collect_orders, state_rules
 from tessa_export.runner import (
     ExportError,
     RunSummary,
@@ -299,7 +299,6 @@ def command_orders(args: argparse.Namespace, gateway_factory: GatewayFactory) ->
         max_docs=max(orders.max_documents, len(fresh), 1),
         directions=config.traversal.directions,
     )
-    rule = state_exclude_rule(orders)
     return _guarded_run(
         config,
         gateway,
@@ -308,7 +307,7 @@ def command_orders(args: argparse.Namespace, gateway_factory: GatewayFactory) ->
             listing.card_ids,
             gateway,
             traversal=traversal,
-            extra_rules=[rule] if rule else [],
+            extra_rules=state_rules(orders),
             source=f"приказы Тессы, представление «{orders.view_alias}»",
             archive=args.archive,
         ),

@@ -7,9 +7,9 @@
 
 Два предохранителя против особенностей представлений: строки дедуплицируются по ID документа
 (представление без пагинации отдаёт весь набор на каждой странице), а обход прекращается по
-`max_pages`/`max_documents`. Исключение по состоянию применяется здесь только предварительно —
-окончательное решение принимается по полю карточки `DocumentCommonInfo.StateID` правилом
-исключения (`state_exclude_rule`), потому что колонки состояния в представлении может не быть.
+`max_pages`/`max_documents`. Отбор по состоянию маршрута применяется здесь только предварительно —
+окончательное решение принимается по полю карточки `DocumentCommonInfo.StateID` правилами
+исключения (`state_rules`), потому что колонки состояния в представлении может не быть.
 """
 
 from __future__ import annotations
@@ -172,7 +172,7 @@ def collect_orders(source: ViewSource, settings: OrdersSettings) -> OrdersListin
                 listing.excluded_by_match += 1
                 continue
             state_id = _to_int(row.get(settings.state_column)) if settings.state_column else None
-            if state_id is not None and state_id in settings.exclude_state_ids:
+            if state_id is not None and not _state_allowed(state_id, settings):
                 listing.excluded_by_state += 1
                 continue
             listing.rows.append(
@@ -198,18 +198,42 @@ def collect_orders(source: ViewSource, settings: OrdersSettings) -> OrdersListin
     return listing
 
 
-def state_exclude_rule(settings: OrdersSettings) -> ExcludeRule | None:
-    """Правило исключения по состоянию маршрута: проверяется уже на полученной карточке."""
-    if not settings.exclude_state_ids:
-        return None
-    names = ", ".join(
-        f"{state} {STATE_NAMES[state]}" if state in STATE_NAMES else str(state)
-        for state in settings.exclude_state_ids
+def _state_allowed(state_id: int, settings: OrdersSettings) -> bool:
+    if settings.include_state_ids and state_id not in settings.include_state_ids:
+        return False
+    return state_id not in settings.exclude_state_ids
+
+
+def _state_names(states: list[int]) -> str:
+    return ", ".join(
+        f"{state} {STATE_NAMES[state]}" if state in STATE_NAMES else str(state) for state in states
     )
-    section, name = STATE_SECTION_FIELD.split(".", 1)
-    return ExcludeRule(
-        reason=f"состояние маршрута: {names}",
-        field=f"{section}.{name}",
-        values=[str(state) for state in settings.exclude_state_ids],
-        applies_to_seed=True,
-    )
+
+
+def state_rules(settings: OrdersSettings) -> list[ExcludeRule]:
+    """Правила отбора по состоянию маршрута: проверяются уже на полученной карточке.
+
+    Белый список `include_state_ids` даёт правило «исключить всё, кроме перечисленного» — карточка
+    без поля StateID тоже исключается, потому что её состояние не подтверждено.
+    """
+    rules: list[ExcludeRule] = []
+    if settings.include_state_ids:
+        rules.append(
+            ExcludeRule(
+                reason=f"состояние маршрута не из списка выгрузки: {_state_names(settings.include_state_ids)}",
+                field=STATE_SECTION_FIELD,
+                values=[str(state) for state in settings.include_state_ids],
+                values_mode="none_of",
+                applies_to_seed=True,
+            )
+        )
+    if settings.exclude_state_ids:
+        rules.append(
+            ExcludeRule(
+                reason=f"состояние маршрута: {_state_names(settings.exclude_state_ids)}",
+                field=STATE_SECTION_FIELD,
+                values=[str(state) for state in settings.exclude_state_ids],
+                applies_to_seed=True,
+            )
+        )
+    return rules

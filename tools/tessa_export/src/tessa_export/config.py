@@ -82,6 +82,13 @@ class ExcludeRule(StrictModel):
     doc_type_titles: list[str] = Field(default_factory=list, description="DocTypeTitle документа")
     field: str | None = Field(default=None, description="Поле секции вида Секция.Поле")
     values: list[str] = Field(default_factory=list, description="Значения поля, при которых исключать")
+    values_mode: Literal["any_of", "none_of"] = Field(
+        default="any_of",
+        description=(
+            "any_of — исключать, если значение поля есть в values; none_of — наоборот, оставлять только "
+            "перечисленные значения (пустое поле тоже исключается: оно не из списка)"
+        ),
+    )
     card_ids: list[UUID] = Field(default_factory=list, description="Явный список ID карточек")
     applies_to_seed: bool = Field(
         default=False,
@@ -226,8 +233,8 @@ class OrdersSettings(StrictModel):
 
     Перечень приказов берётся из представления Тессы: алиас и параметры фильтра заполняются по
     рабочему контуру заказчика (`tessa-export views` показывает доступные представления, их колонки
-    и параметры). Исключение по состоянию применяется дважды: по колонке представления, если она в
-    нём есть, и обязательно по полю карточки `DocumentCommonInfo.StateID` после её получения.
+    и параметры). Отбор по состоянию маршрута применяется дважды: по колонке представления, если она
+    в нём есть, и обязательно по полю карточки `DocumentCommonInfo.StateID` после её получения.
     """
 
     view_alias: str | None = Field(
@@ -241,13 +248,17 @@ class OrdersSettings(StrictModel):
     state_column: str | None = Field(
         default="StateID", description="Колонка с состоянием маршрута; null — в представлении её нет"
     )
-    exclude_state_ids: list[int] = Field(
+    include_state_ids: list[int] = Field(
         default=[6],
         description=(
-            "Состояния, которые не выгружаются. 6 = $KrStates_Doc_Registered «Зарегистрировано» "
-            "(указание заказчика 2026-09-18). Действует только здесь, правило статуса в секции status "
-            "не меняется"
+            "Выгружать только эти состояния маршрута. По умолчанию 6 = $KrStates_Doc_Registered "
+            "«Зарегистрировано» (решение заказчика 2026-09-18: так в выгрузку не попадают проекты и "
+            "несогласованные документы). Пустой список — отбора по белому списку нет"
         ),
+    )
+    exclude_state_ids: list[int] = Field(
+        default_factory=list,
+        description="Состояния, которые не выгружать (применяется после include_state_ids)",
     )
     match: dict[str, list[str]] = Field(
         default_factory=dict,

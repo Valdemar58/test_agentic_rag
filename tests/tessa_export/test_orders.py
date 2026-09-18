@@ -10,12 +10,12 @@ import pytest
 from tessa_export.config import OrdersSettings, ViewParameter, ViewValue
 from tessa_export.fake import FakeGateway, stable_uuid
 from tessa_export.models import GatewayError, rows_by_column
-from tessa_export.orders import OrdersError, collect_orders, state_exclude_rule
+from tessa_export.orders import OrdersError, collect_orders, state_rules
 
 COLUMNS = ["DocID", "DocDescription", "DocTypeName", "StateID"]
 
 
-def _row(name: str, *, state: int = 8, kind: str = "Приказ") -> dict[str, Any]:
+def _row(name: str, *, state: int = 6, kind: str = "Приказ") -> dict[str, Any]:
     return {
         "DocID": str(stable_uuid("order", name)),
         "DocDescription": f"Приказ № {name}",
@@ -39,8 +39,9 @@ def test_rows_by_column_maps_positional_rows() -> None:
     assert rows == [{"A": 1, "B": 2}, {"A": 3}]
 
 
-def test_collect_orders_skips_excluded_state_and_reports_counts() -> None:
-    rows = [_row("1"), _row("2", state=6), _row("3", state=6), _row("4")]
+def test_collect_orders_keeps_only_allowed_states_and_reports_counts() -> None:
+    """По умолчанию выгружается только состояние 6 «Зарегистрировано» — действующие приказы."""
+    rows = [_row("1", state=6), _row("2", state=1), _row("3", state=0), _row("4", state=6)]
     listing = collect_orders(_gateway(rows), _settings())
 
     assert listing.card_ids == [stable_uuid("order", "1"), stable_uuid("order", "4")]
@@ -48,6 +49,14 @@ def test_collect_orders_skips_excluded_state_and_reports_counts() -> None:
     assert listing.received == 4
     assert not listing.truncated
     assert "отсеяно: по состоянию 2" in "\n".join(listing.summary_lines())
+
+
+def test_collect_orders_supports_black_list_of_states() -> None:
+    rows = [_row("1", state=6), _row("2", state=5), _row("3", state=8)]
+    listing = collect_orders(_gateway(rows), _settings(include_state_ids=[], exclude_state_ids=[5]))
+
+    assert listing.card_ids == [stable_uuid("order", "1"), stable_uuid("order", "3")]
+    assert listing.excluded_by_state == 1
 
 
 def test_collect_orders_applies_client_side_match() -> None:
@@ -114,14 +123,17 @@ def test_collect_orders_skips_rows_without_document_id() -> None:
     assert listing.without_id == 2
 
 
-def test_state_exclude_rule_matches_card_field() -> None:
-    rule = state_exclude_rule(OrdersSettings())
-    assert rule is not None
+def test_state_rules_keep_only_allowed_states_on_the_card() -> None:
+    (rule,) = state_rules(OrdersSettings())
     assert rule.field == "DocumentCommonInfo.StateID"
-    assert rule.values == ["6"]
+    assert (rule.values, rule.values_mode) == (["6"], "none_of")
     assert rule.applies_to_seed
-    assert "Зарегистрировано" in rule.reason
-    assert state_exclude_rule(OrdersSettings(exclude_state_ids=[])) is None
+    assert "не из списка выгрузки: 6 Зарегистрировано" in rule.reason
+
+    black_list = state_rules(OrdersSettings(include_state_ids=[], exclude_state_ids=[5, 17]))
+    assert len(black_list) == 1
+    assert (black_list[0].values, black_list[0].values_mode) == (["5", "17"], "any_of")
+    assert state_rules(OrdersSettings(include_state_ids=[])) == []
 
 
 def test_fake_gateway_lists_views() -> None:

@@ -1,4 +1,4 @@
-"""Синхронизация приказов: накопительный экспорт, пропуск выгруженных, исключение состояния."""
+"""Синхронизация приказов: накопительный экспорт, пропуск выгруженных, отбор по состоянию."""
 
 from __future__ import annotations
 
@@ -17,7 +17,10 @@ from tessa_export.fake import FakeGateway, link, make_file, make_snapshot, stabl
 from tessa_export.sample_files import minimal_docx_bytes
 
 COLUMNS = ["DocID", "DocDescription", "StateID"]
-FIRST, SECOND, REGISTERED = (stable_uuid("orders", name) for name in ("first", "second", "registered"))
+# FIRST и SECOND — действующие приказы (состояние 6), DRAFT — несогласованный проект (состояние 1)
+FIRST, SECOND, DRAFT = (stable_uuid("orders", name) for name in ("first", "second", "draft"))
+NAMES = {FIRST: "101", SECOND: "102", DRAFT: "103"}
+REGISTERED, IN_APPROVAL = 6, 1
 
 
 @pytest.fixture(autouse=True)
@@ -48,10 +51,7 @@ def _config(tmp_path: Path, output: Path) -> Path:
     return path
 
 
-NAMES = {FIRST: "101", SECOND: "102", REGISTERED: "103"}
-
-
-def _order(card_id: UUID, *, state: int = 8) -> tuple[Any, dict[str, bytes]]:
+def _order(card_id: UUID, *, state: int = REGISTERED) -> tuple[Any, dict[str, bytes]]:
     name = NAMES[card_id]
     file_name = f"Приказ {name}.docx"
     snapshot = make_snapshot(
@@ -59,7 +59,7 @@ def _order(card_id: UUID, *, state: int = 8) -> tuple[Any, dict[str, bytes]]:
         number=name,
         doc_type_title="Приказ",
         state_id=state,
-        state_name="Зарегистрировано" if state == 6 else "Подписан",
+        state_name="Зарегистрировано" if state == REGISTERED else "На согласовании",
         files=[make_file(card_id, file_name)],
         outgoing=[link(stable_uuid("orders", "outside"))],
     )
@@ -70,13 +70,13 @@ def _gateway(rows: list[dict[str, Any]], cards: list[UUID]) -> FakeGateway:
     gateway = FakeGateway()
     gateway.add_view("Orders", COLUMNS, rows, caption="Приказы")
     for card_id in cards:
-        snapshot, contents = _order(card_id, state=6 if card_id == REGISTERED else 8)
+        snapshot, contents = _order(card_id, state=IN_APPROVAL if card_id == DRAFT else REGISTERED)
         gateway.add(snapshot, contents)
     return gateway
 
 
-def _row(card_id: UUID, name: str, state: int) -> dict[str, Any]:
-    return {"DocID": str(card_id), "DocDescription": f"Приказ № {name}", "StateID": state}
+def _row(card_id: UUID, state: int) -> dict[str, Any]:
+    return {"DocID": str(card_id), "DocDescription": f"Приказ № {NAMES[card_id]}", "StateID": state}
 
 
 def _manifest(output: Path) -> dict[str, Any]:
@@ -84,13 +84,13 @@ def _manifest(output: Path) -> dict[str, Any]:
     return data
 
 
-def test_orders_sync_skips_exported_and_excludes_registered_state(
+def test_orders_sync_skips_exported_and_keeps_only_registered_state(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     output = tmp_path / "out"
     config = _config(tmp_path, output)
 
-    first_gateway = _gateway([_row(FIRST, "101", 8)], [FIRST])
+    first_gateway = _gateway([_row(FIRST, REGISTERED)], [FIRST])
     assert cli.main(["orders", "--config", str(config)], gateway_factory=lambda *_: first_gateway) == 0
     manifest = _manifest(output)
     assert [document["card_id"] for document in manifest["documents"]] == [str(FIRST)]
@@ -98,12 +98,12 @@ def test_orders_sync_skips_exported_and_excludes_registered_state(
     assert manifest["traversal"]["max_depth"] == 0
     first_file = (output / "export" / "files" / str(FIRST) / "Приказ 101.docx").read_bytes()
 
-    # второй прогон: тот же приказ + новый + приказ в состоянии «Зарегистрировано»
-    rows = [_row(FIRST, "101", 8), _row(SECOND, "102", 8), _row(REGISTERED, "103", 6)]
-    second_gateway = _gateway(rows, [FIRST, SECOND, REGISTERED])
+    # второй прогон: тот же приказ + новый действующий + несогласованный проект
+    rows = [_row(FIRST, REGISTERED), _row(SECOND, REGISTERED), _row(DRAFT, IN_APPROVAL)]
+    second_gateway = _gateway(rows, [FIRST, SECOND, DRAFT])
     assert cli.main(["orders", "--config", str(config)], gateway_factory=lambda *_: second_gateway) == 0
 
-    # выгруженный приказ не перезапрашивался, приказ в состоянии 6 отсеян по строке представления
+    # выгруженный приказ не перезапрашивался, проект отсеян по строке представления
     assert second_gateway.get_calls == [SECOND]
     assert second_gateway.download_calls == [(SECOND, _order(SECOND)[0].files[0].row_id)]
 
@@ -124,29 +124,35 @@ def test_orders_sync_skips_exported_and_excludes_registered_state(
     assert "отсеяно: по состоянию 1" in out
 
 
-def test_orders_sync_excludes_registered_state_by_card_field(tmp_path: Path) -> None:
+def test_orders_sync_checks_state_on_the_card_when_the_view_has_no_column(tmp_path: Path) -> None:
     """Колонки состояния в представлении может не быть — тогда решает поле карточки."""
     output = tmp_path / "out"
     config = _config(tmp_path, output)
-    gateway = FakeGateway()
-    gateway.add_view(
-        "Orders", ["DocID", "DocDescription"], [{"DocID": str(REGISTERED), "DocDescription": "Приказ № 103"}]
-    )
-    snapshot, contents = _order(REGISTERED, state=6)
-    gateway.add(snapshot, contents)
     config.write_text(
         config.read_text(encoding="utf-8").replace(
             "  page_limit: 50\n", "  page_limit: 50\n  state_column: null\n"
         ),
         encoding="utf-8",
     )
+    gateway = FakeGateway()
+    gateway.add_view(
+        "Orders",
+        ["DocID", "DocDescription"],
+        [
+            {"DocID": str(DRAFT), "DocDescription": "Приказ № 103"},
+            {"DocID": str(FIRST), "DocDescription": "Приказ № 101"},
+        ],
+    )
+    for card_id in (DRAFT, FIRST):
+        snapshot, contents = _order(card_id, state=IN_APPROVAL if card_id == DRAFT else REGISTERED)
+        gateway.add(snapshot, contents)
 
     assert cli.main(["orders", "--config", str(config)], gateway_factory=lambda *_: gateway) == 0
     manifest = _manifest(output)
-    assert manifest["documents"] == []
-    assert manifest["excluded"][0]["card_id"] == str(REGISTERED)
-    assert "6 Зарегистрировано" in manifest["excluded"][0]["reason"]
-    assert not (output / "export" / "files" / str(REGISTERED)).exists()
+    assert [document["card_id"] for document in manifest["documents"]] == [str(FIRST)]
+    assert manifest["excluded"][0]["card_id"] == str(DRAFT)
+    assert "не из списка выгрузки: 6 Зарегистрировано" in manifest["excluded"][0]["reason"]
+    assert not (output / "export" / "files" / str(DRAFT)).exists()
 
 
 def test_orders_dry_run_does_not_touch_tessa_cards(
@@ -154,7 +160,7 @@ def test_orders_dry_run_does_not_touch_tessa_cards(
 ) -> None:
     output = tmp_path / "out"
     config = _config(tmp_path, output)
-    gateway = _gateway([_row(FIRST, "101", 8), _row(SECOND, "102", 8)], [FIRST, SECOND])
+    gateway = _gateway([_row(FIRST, REGISTERED), _row(SECOND, REGISTERED)], [FIRST, SECOND])
 
     code = cli.main(
         ["orders", "--config", str(config), "--dry-run", "--limit", "1"],
@@ -178,7 +184,8 @@ def test_orders_without_view_alias_is_a_config_error(
     )
     gateway = _gateway([], [])
     assert (
-        cli.main(["orders", "--config", str(config)], gateway_factory=lambda *_: gateway) == cli.EXIT_CONFIG
+        cli.main(["orders", "--config", str(config)], gateway_factory=lambda *_: gateway)
+        == cli.EXIT_CONFIG
     )
     assert "orders.view_alias" in capsys.readouterr().out
     assert gateway.closed

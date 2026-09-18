@@ -115,6 +115,18 @@ class _Node:
     entry_paths: list[EntryPath]
 
 
+def _field_matches(snapshot: CardSnapshot, rule: ExcludeRule) -> bool:
+    """Критерий по полю карточки: any_of — значение в списке, none_of — значения в списке нет."""
+    assert rule.field is not None  # noqa: S101 — вызывается только при заданном field
+    section, name = rule.field.split(".", 1)
+    value = snapshot.section_field(section, name)
+    wanted = {item.casefold() for item in rule.values}
+    text = None if value is None else str(value).casefold()
+    if rule.values_mode == "any_of":
+        return text is not None and text in wanted
+    return text is None or text not in wanted
+
+
 def match_exclusion(snapshot: CardSnapshot, rules: list[ExcludeRule], *, is_seed: bool = False) -> str | None:
     """Возвращает подпись сработавшего правила или None.
 
@@ -131,11 +143,8 @@ def match_exclusion(snapshot: CardSnapshot, rules: list[ExcludeRule], *, is_seed
         title = snapshot.common_text("DocTypeTitle")
         if title and any(title.casefold() == item.casefold() for item in rule.doc_type_titles):
             return label
-        if rule.field:
-            section, name = rule.field.split(".", 1)
-            value = snapshot.section_field(section, name)
-            if value is not None and str(value).casefold() in {item.casefold() for item in rule.values}:
-                return label
+        if rule.field and _field_matches(snapshot, rule):
+            return label
     return None
 
 
