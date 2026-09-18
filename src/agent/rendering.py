@@ -425,23 +425,34 @@ def render_evidence(
     settings: AnswerSettings,
     *,
     cached_aliases: Collection[str] = (),
+    max_chars: int | None = None,
 ) -> str:
     """Документы и фрагменты прогона для промпта итогового ответа, в бюджете `evidence_max_chars`.
 
     Контекст раздела показывается один раз на раздел и не показывается, если сам раздел уже среди
-    свидетельств; фрагмент, не влезающий в остаток бюджета, обрезается, а не выбрасывается."""
+    свидетельств; фрагмент, не влезающий в остаток бюджета, обрезается, а не выбрасывается.
+    `max_chars` — бюджет строже настроенного: раннер сужает его, когда промпт и ответ вместе не
+    помещаются в контекст модели."""
+    if max_chars is not None and max_chars < settings.evidence_max_chars:
+        settings = settings.model_copy(update={"evidence_max_chars": max(max_chars, 0)})
     if not fragment_aliases and not document_aliases:
         return NO_EVIDENCE
     lines = ["Документы (факты карточки цитируй ссылкой на документ, например [D1]):"]
+    # половина бюджета — предел на раздел документов: у вопроса про договор с четырьмя допсоглашениями
+    # сводки карточек занимали 40 000 символов и промпт не влезал в контекст (прогон 2026-09-18)
+    documents_budget = settings.evidence_max_chars // 2
+    documents_used = 0
     for alias in _unique(document_aliases):
         document = registry.document_by_alias(alias)
         if document is None:
             continue
         line = f"[{document.alias}] {document.label or FALLBACK_LABEL} — {document.status}"
-        if document.card_text:
+        if document.card_text and documents_used < documents_budget:
             # сводка карточки без первой строки (она повторяет подпись и статус); связи уже внутри
+            summary = [f"    {item}" for item in document.card_text.splitlines()[1:]]
             lines.append(line)
-            lines.extend(f"    {item}" for item in document.card_text.splitlines()[1:])
+            lines.extend(summary)
+            documents_used += len(line) + sum(len(item) for item in summary)
             continue
         if document.subject:
             line += f"; тема: «{document.subject}»"
@@ -449,8 +460,10 @@ def render_evidence(
             line += f"; подразделение: {document.department}"
         line += NO_CARD_NOTE
         lines.append(line)
+        documents_used += len(line)
         for relation in document.relations[:8]:
             lines.append(f"    связь: {relation}")
+            documents_used += len(lines[-1])
     lines.append("Фрагменты:")
     used = sum(len(line) for line in lines)
     fragments = [

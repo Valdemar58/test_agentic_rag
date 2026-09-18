@@ -337,6 +337,13 @@ class SamplingSettings(StrictModel):
 class LlmSettings(StrictModel):
     max_tokens: int = Field(gt=0, description="Лимит генерации без размышлений")
     thinking_max_tokens: int = Field(gt=0, description="Лимит генерации с размышлениями (они входят в лимит)")
+    chars_per_token: float = Field(
+        gt=0, description="Оценка длины промпта в токенах: символов на токен русского текста"
+    )
+    context_reserve_tokens: int = Field(ge=0, description="Запас токенов контекста поверх оценки промпта")
+    min_answer_tokens: int = Field(
+        gt=0, description="Ниже этого лимит генерации ответа не опускается даже при длинном промпте"
+    )
     timeout_s: float = Field(gt=0)
     max_retries: int = Field(ge=0, description="Повторы запроса к vLLM при сетевой ошибке")
     sampling: SamplingSettings = Field(description="Сэмплинг без размышлений (рекомендация Qwen)")
@@ -417,6 +424,10 @@ class AnswerSettings(StrictModel):
     context_chars: int = Field(ge=0, description="Контекст раздела-родителя при каждом фрагменте")
     empty_retries: int = Field(
         ge=0, description="Сколько раз повторить шаг ответа, если модель вернула пустой текст"
+    )
+    context_shrinks: int = Field(
+        ge=0,
+        description="Сколько раз урезать свидетельства и повторить ответ, если промпт не влез в контекст",
     )
 
 

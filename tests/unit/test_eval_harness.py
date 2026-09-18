@@ -91,6 +91,9 @@ def test_select_by_id_category_and_limit() -> None:
 def test_hit_refusal_and_conflict_are_deterministic() -> None:
     assert _outcome().hit
     assert not _outcome(expected_doc_ids=["doc-1", "doc-2"]).hit
+    # duplicated: ответ записан в нескольких документах, достаточно ссылки на любой из них
+    assert _outcome(expected_doc_ids=["doc-1", "doc-2"], expected_any=True).hit
+    assert not _outcome(expected_doc_ids=["doc-8", "doc-9"], expected_any=True).hit
     assert _outcome(
         expected_doc_ids=["doc-1", "doc-2"], sources=[_source(1, "doc-1"), _source(2, "doc-2")]
     ).hit

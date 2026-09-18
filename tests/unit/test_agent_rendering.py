@@ -102,3 +102,23 @@ def test_without_fragments_and_documents_there_is_no_evidence() -> None:
     registry = registry_with_dialog()
     text = render_evidence(registry, ["S9"], ["D1"], SETTINGS)
     assert _order(text) == [] and text.endswith("Фрагменты:")
+
+
+def test_documents_section_is_bounded_by_half_the_budget() -> None:
+    """Прогон 2026-09-18: сводки карточек договора с допсоглашениями заняли 40 000 символов промпта."""
+    registry = EvidenceRegistry(20)
+    aliases: list[str] = []
+    for number in range(6):
+        document = registry.register_document(
+            f"doc-{number}",
+            label=f"Договорной документ №{number}",
+            doc_status="active",
+            card_text="сводка\n" + "\n".join(f"    поле {index}: значение" for index in range(40)),
+        )
+        aliases.append(document.alias)
+    settings = SETTINGS.model_copy(update={"evidence_max_chars": 4000})
+    rendered = render_evidence(registry, [], aliases, settings)
+    documents_part = rendered.split("Фрагменты:")[0]
+    assert len(documents_part) <= settings.evidence_max_chars, "раздел документов держится в половине бюджета"
+    assert rendered.count("поле 39") < len(aliases), "сводки карточек сверх предела не печатаются"
+    assert all(f"[{alias}]" in rendered for alias in aliases), "сам документ виден всегда"

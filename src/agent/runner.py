@@ -19,7 +19,7 @@ from typing import Any, Literal, Protocol
 from llama_index.core.agent.workflow import AgentOutput, FunctionAgent, ToolCall, ToolCallResult
 from llama_index.core.llms import LLM, ChatMessage
 from llama_index.core.memory import ChatMemoryBuffer
-from openai import APIStatusError
+from openai import APIStatusError, BadRequestError
 from pydantic import BaseModel, Field
 from workflows.errors import WorkflowRuntimeError, WorkflowTimeoutError
 
@@ -35,6 +35,7 @@ from agent.prompts import (
     FORCED_SEARCH_NOTE,
     NO_ANSWER_PHRASE,
     NO_HITS_NOTES,
+    VERIFY_SYSTEM_PROMPT,
     answer_system_prompt,
     answer_user_message,
     chat_user_message,
@@ -65,6 +66,13 @@ logger = logging.getLogger(__name__)
 # несколько шагов, чтобы написать заметки; дальше LlamaIndex сам просит итоговое сообщение
 EXTRA_LLM_STEPS = 3
 UNLIMITED_TOKENS = 10**9
+# ниже этого свидетельства не урезаются: без них ответ бессмыслен, лучше отдать ошибку модели
+MIN_EVIDENCE_CHARS = 2000
+# длина системного промпта проверки и обвязки её сообщения — в расчёт лимита генерации
+VERIFY_PROMPT_CHARS = len(VERIFY_SYSTEM_PROMPT)
+# признак отказа vLLM по длине контекста и во сколько раз урезаются свидетельства на повторе
+CONTEXT_ERROR_MARK = "context length"
+EVIDENCE_SHRINK = 0.6
 
 
 class LlmFactory(Protocol):
@@ -327,7 +335,7 @@ class AgentRunner:
         evidence = ""
         facts = ""
         if rewritten.needs_search:
-            evidence = self._render_evidence(run)
+            evidence = self._render_evidence(run, reserve_chars=len(question) + len(notes))
             # в промпт ответа из заметок попадают только факты с псевдонимами: вывод шага без размышлений
             # («вернуться не позднее 13:00») иначе становится для ответа «фактом документа»
             facts = facts_only(notes, [*run.fragment_aliases, *run.document_aliases])
@@ -338,7 +346,7 @@ class AgentRunner:
         while True:
             rounds += 1
             stream = (
-                self._compose(question, facts, evidence, run, feedback=feedback)
+                self._compose_in_context(question, facts, evidence, run, feedback=feedback)
                 if rewritten.needs_search
                 else self._compose_chat(question, session)
             )
@@ -366,7 +374,7 @@ class AgentRunner:
                     # размышления съели весь лимит токенов, текста нет (живой прогон 2026-09-17): повтор
                     logger.warning("Шаг ответа вернул пустой текст (попытка %d), повторяю", attempts)
                     stream = (
-                        self._compose(question, facts, evidence, run, feedback=feedback)
+                        self._compose_in_context(question, facts, evidence, run, feedback=feedback)
                         if rewritten.needs_search
                         else self._compose_chat(question, session)
                     )
@@ -621,14 +629,66 @@ class AgentRunner:
 
     # ---------- итоговый ответ ----------
 
-    def _render_evidence(self, run: ToolRun) -> str:
+    def _render_evidence(self, run: ToolRun, *, reserve_chars: int = 0) -> str:
         return render_evidence(
             run.registry,
             run.fragment_aliases,
             run.document_aliases,
             self._config.agent.answer,
             cached_aliases=run.cached_fragment_aliases,
+            max_chars=self._evidence_budget(reserve_chars),
         )
+
+    def _evidence_budget(self, reserve_chars: int) -> int:
+        """Сколько символов свидетельств поместится в промпт так, чтобы модели осталось на ответ.
+
+        Прогон голден-сета 2026-09-17: на договорных свидетельствах с таблицами промпт из 20 000 символов
+        весит около 15 000 токенов (≈1,6 символа на токен), и вызов падал с ошибкой 400 — бюджет
+        свидетельств считается от контекста модели, а не только от `evidence_max_chars`."""
+        settings = self._config.agent.llm
+        answer = self._config.agent.answer
+        room_tokens = (
+            self._config.vllm.qwen.max_model_len
+            - settings.min_answer_tokens
+            - settings.context_reserve_tokens
+        )
+        # последний фрагмент показывается целиком, поэтому бюджет может быть превышен на один блок:
+        # фрагмент плюс контекст его раздела
+        slack = self._config.agent.tool_output.fragment_chars + answer.context_chars
+        overhead = len(answer_system_prompt(budget_exhausted=False)) + reserve_chars + slack
+        return max(MIN_EVIDENCE_CHARS, int(room_tokens * settings.chars_per_token) - overhead)
+
+    async def _compose_in_context(
+        self,
+        question: str,
+        facts: str,
+        evidence: str,
+        run: ToolRun,
+        feedback: Sequence[tuple[str, str]] = (),
+    ) -> AsyncIterator[tuple[str, ChatMessage | None]]:
+        """Стрим ответа с самокоррекцией по контексту: если модель отказала «слишком длинный промпт»,
+        свидетельства урезаются и вызов повторяется.
+
+        Оценка длины промпта по символам ненадёжна: на договорных свидетельствах с таблицами и числами
+        выходит 1,3 символа на токен, на обычном тексте — 2,5. Прогон голден-сета 2026-09-17: два вопроса
+        из 59 упирались в предел даже после расчётного урезания. Ошибка приходит до генерации, поэтому
+        повтор ничего не дублирует в стриме; если токены уже пошли, ошибка отдаётся наверх."""
+        shrinks = self._config.agent.answer.context_shrinks
+        for attempt in range(shrinks + 1):
+            started = False
+            try:
+                async for item in self._compose(question, facts, evidence, run, feedback=feedback):
+                    started = True
+                    yield item
+                return
+            except BadRequestError as exc:
+                if started or attempt == shrinks or CONTEXT_ERROR_MARK not in str(exc):
+                    raise
+                evidence = cut(evidence, max(MIN_EVIDENCE_CHARS, int(len(evidence) * EVIDENCE_SHRINK)))
+                logger.warning(
+                    "Промпт ответа не влез в контекст модели: урезаю свидетельства до %d символов",
+                    len(evidence),
+                )
 
     async def _compose(
         self,
@@ -660,7 +720,12 @@ class AgentRunner:
         return bool(run.fragment_aliases or run.document_aliases)
 
     async def _verify(self, question: str, draft: str, evidence: str) -> tuple[Verification, str]:
-        verifier = AnswerVerifier(self._llms("verify"), self._config.agent.verify)
+        llm = self._llms("verify")
+        # тот же расчёт, что у ответа: проверяющий видит черновик и те же свидетельства
+        budget = self.token_budget(len(question) + len(draft) + len(evidence) + VERIFY_PROMPT_CHARS, "verify")
+        if budget != getattr(llm, "max_tokens", budget):
+            llm = llm.model_copy(update={"max_tokens": budget})
+        verifier = AnswerVerifier(llm, self._config.agent.verify)
         return await verifier.verify(question, draft, evidence)
 
     async def _compose_chat(
@@ -674,10 +739,28 @@ class AgentRunner:
         async for item in self._stream_answer(messages):
             yield item
 
+    def token_budget(self, prompt_chars: int, role: LlmRole) -> int:
+        """Лимит генерации с учётом длины промпта: промпт и ответ вместе должны влезть в контекст.
+
+        Прогон голден-сета 2026-09-17: вопросы с длинными договорными свидетельствами падали с ошибкой
+        400 («6144 output tokens + 10241 input tokens» при контексте 16 384)."""
+        settings = self._config.agent.llm
+        limit = self._config.agent.llm_options(role).max_tokens
+        estimate = int(prompt_chars / settings.chars_per_token) + settings.context_reserve_tokens
+        available = self._config.vllm.qwen.max_model_len - estimate
+        return max(settings.min_answer_tokens, min(limit, available))
+
+    def answer_tokens(self, messages: Sequence[ChatMessage]) -> int:
+        return self.token_budget(sum(len(str(message.content or "")) for message in messages), "answer")
+
     async def _stream_answer(
         self, messages: list[ChatMessage]
     ) -> AsyncIterator[tuple[str, ChatMessage | None]]:
         llm = self._llms("answer")
+        budget = self.answer_tokens(messages)
+        if budget != getattr(llm, "max_tokens", budget):
+            logger.info("Промпт ответа длинный: лимит генерации уменьшен до %d токенов", budget)
+            llm = llm.model_copy(update={"max_tokens": budget})
         last: ChatMessage | None = None
         async for response in await llm.astream_chat(messages):
             if response.delta:

@@ -40,6 +40,9 @@ class QuestionOutcome(BaseModel):
     question: str
     answer: str
     expected_doc_ids: list[str] = Field(default_factory=list)
+    expected_any: bool = Field(
+        default=False, description="Достаточно любого ожидаемого документа (категория duplicated)"
+    )
     sources: list[Source] = Field(default_factory=list, description="Источники ответа (нужны судье)")
     refused: bool = False
     unresolved: list[str] = Field(default_factory=list, description="Ссылки, не найденные в реестре (M3)")
@@ -65,8 +68,14 @@ class QuestionOutcome(BaseModel):
 
     @property
     def hit(self) -> bool:
-        """Все ожидаемые документы есть в источниках ответа (M1)."""
+        """Ожидаемые документы есть в источниках ответа (M1).
+
+        По умолчанию нужны все; у вопросов с `expected_any` (один и тот же ответ записан в нескольких
+        документах, категория `duplicated`) достаточно любого — иначе метрика наказывала бы за ссылку
+        на равноценный документ."""
         found = self.found_doc_ids
+        if self.expected_any:
+            return any(doc_id in found for doc_id in self.expected_doc_ids)
         return all(doc_id in found for doc_id in self.expected_doc_ids)
 
     @property

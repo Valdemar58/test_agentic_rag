@@ -53,6 +53,11 @@ class GoldenQuestion(StrictModel):
     expected_doc_ids: list[str] = Field(
         default_factory=list, description="Документы, обязанные быть в источниках ответа (M1)"
     )
+    expected_any: bool = Field(
+        default=False,
+        description="Достаточно любого из expected_doc_ids: ответ есть в нескольких документах "
+        "(категория duplicated) — трактовка §10.3 [ТРЕБУЕТ ПОДТВЕРЖДЕНИЯ]",
+    )
     follow_up: str | None = Field(default=None, description="Второй вопрос двухходового сценария")
     follow_up_expected: str | None = Field(default=None, description="Ключевые факты ответа на уточнение")
     derived: bool = Field(
@@ -68,6 +73,8 @@ class GoldenQuestion(StrictModel):
             raise ValueError(f"{self.id}: нужен хотя бы один expected_doc_id")
         if self.category == "multi_doc" and len(self.expected_doc_ids) < 2:
             raise ValueError(f"{self.id}: multi_doc — это ответ по двум и более документам")
+        if self.expected_any and len(self.expected_doc_ids) < 2:
+            raise ValueError(f"{self.id}: expected_any имеет смысл при двух и более документах")
         if self.category == "clarification" and not self.follow_up:
             raise ValueError(f"{self.id}: clarification — двухходовый сценарий, нужен follow_up")
         if self.follow_up and not self.follow_up_expected:

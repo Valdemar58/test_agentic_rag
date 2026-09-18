@@ -91,6 +91,7 @@ class AgentAsk:
             question=question.question,
             answer="",
             expected_doc_ids=list(question.expected_doc_ids),
+            expected_any=question.expected_any,
             follow_up=question.follow_up,
         )
         session = AgentSession(self._config)
