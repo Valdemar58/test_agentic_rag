@@ -283,6 +283,8 @@ uv run python scripts/make_synthetic_corpus.py   # data/corpus/: 13 карточ
 
 ## Что ещё почитать
 
+- `docs/test_machine.md` — развёртывание на машине с доступом к Тессе: от пустой машины до
+  вопросов по выгруженным приказам.
 - `docs/metrics_report.md` — замер M1–M8 на реальном корпусе и что не достигнуто.
 - `docs/limitations.md` — известные ограничения MVP и задел под следующую фазу.
 - `docs/chunk_metadata_mapping.md` — поле карточки → метаданные чанка.
