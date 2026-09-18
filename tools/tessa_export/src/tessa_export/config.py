@@ -53,9 +53,13 @@ class TessaSettings(StrictModel):
 
 
 class ExternalCodeSettings(StrictModel):
-    tessa_sdk_path: Path = Field(description="Корень репозитория SDK Тессы (пакет tessa_client в src/)")
-    card_service_path: Path = Field(
-        description="Корень репозитория сервиса карточек (пакет robot_skills в src/)"
+    """Где искать внешний код. Пусто — пакет уже установлен в окружение (внутренний индекс)."""
+
+    tessa_sdk_path: Path | None = Field(
+        default=None, description="Корень репозитория SDK Тессы (пакет tessa_client в src/)"
+    )
+    card_service_path: Path | None = Field(
+        default=None, description="Корень репозитория сервиса карточек (пакет robot_skills в src/)"
     )
 
 
@@ -279,7 +283,7 @@ class OrdersSettings(StrictModel):
 
 class ExportConfig(StrictModel):
     tessa: TessaSettings
-    external: ExternalCodeSettings
+    external: ExternalCodeSettings = Field(default_factory=ExternalCodeSettings)
     seed_file: Path = Field(default=Path("seed_cards.yaml"), description="Seed-список карточек")
     output_dir: Path = Field(default=Path("output"), description="Каталог результата и лога")
     archive_name: str = Field(default="tessa_export.zip", description="Имя итогового архива")

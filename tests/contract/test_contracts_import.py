@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 from pydantic import BaseModel
 
+from contracts import external_paths
 from contracts.card_service import CardServiceContract, card_data_from_tessa_response
 from contracts.external_paths import ExternalPaths, resolve_external_paths
 
@@ -24,6 +25,7 @@ def test_missing_paths_report_reason(monkeypatch: pytest.MonkeyPatch) -> None:
     assert status.reason is not None
     assert "TESSA_SDK_PATH" in status.reason
     assert "CARD_SERVICE_PATH" in status.reason
+    assert "не установлен в окружение" in status.reason
 
 
 def test_wrong_paths_report_missing_packages(tmp_path: Path) -> None:
@@ -34,6 +36,32 @@ def test_wrong_paths_report_missing_packages(tmp_path: Path) -> None:
     assert status.reason is not None
     assert "tessa_client" in status.reason
     assert "robot_skills" in status.reason
+
+
+def test_installed_packages_are_used_when_paths_are_not_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Вариант поставки колёсами из внутреннего индекса: пути не нужны, пакет уже в окружении."""
+    monkeypatch.setattr(external_paths, "package_installed", lambda package: True)
+    paths = ExternalPaths(tessa_sdk_path=None, card_service_path=None, _env_file=None)
+    status = resolve_external_paths(paths)
+
+    assert status.available
+    assert status.source_dirs == ()
+    assert status.installed_packages == ("tessa_client", "robot_skills")
+
+
+def test_path_wins_over_installed_package(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Заданный путь важнее установленного пакета: так стенд работает с рабочей копией SDK."""
+    monkeypatch.setattr(external_paths, "package_installed", lambda package: True)
+    sdk = tmp_path / "tessa_sdk" / "src" / "tessa_client"
+    sdk.mkdir(parents=True)
+    (sdk / "__init__.py").write_text("", encoding="utf-8")
+
+    paths = ExternalPaths(tessa_sdk_path=tmp_path / "tessa_sdk", card_service_path=None, _env_file=None)
+    status = resolve_external_paths(paths)
+
+    assert status.available
+    assert status.source_dirs == (tmp_path / "tessa_sdk" / "src",)
+    assert status.installed_packages == ("robot_skills",)
 
 
 def test_card_data_schema_loaded(contract: CardServiceContract) -> None:

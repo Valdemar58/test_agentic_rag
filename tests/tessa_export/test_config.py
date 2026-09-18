@@ -71,9 +71,15 @@ def test_missing_required_field_gives_readable_error(tmp_path: Path) -> None:
     path = _write(tmp_path, "config.yaml", "tessa:\n  verify_tls: true\n")
     with pytest.raises(ConfigError) as exc_info:
         load_config(path)
-    message = str(exc_info.value)
-    assert "tessa.base_url" in message
-    assert "external" in message
+    assert "tessa.base_url" in str(exc_info.value)
+
+
+def test_external_paths_are_optional(tmp_path: Path) -> None:
+    """Пути к внешнему коду можно не задавать: пакеты ставятся в окружение из внутреннего индекса."""
+    path = _write(tmp_path, "config.yaml", "tessa:\n  base_url: https://tessa.local\n")
+    config = load_config(path)
+    assert config.external.tessa_sdk_path is None
+    assert config.external.card_service_path is None
 
 
 def test_unknown_key_is_rejected(tmp_path: Path) -> None:

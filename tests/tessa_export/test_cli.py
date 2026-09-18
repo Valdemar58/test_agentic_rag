@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 import structlog
 
-from tessa_export import cli
+from tessa_export import cli, external
 from tessa_export.config import ExportConfig
 from tessa_export.fake import FakeGateway, build_demo_scenario, make_file, make_snapshot, stable_uuid
 from tessa_export.models import CardAccessError, GatewayConnectionError, TessaViewGateway
@@ -124,6 +124,8 @@ def test_external_code_error(
 ) -> None:
     monkeypatch.setenv("TESSA_USERNAME", "u")
     monkeypatch.setenv("TESSA_PASSWORD", "p")
+    # ни пути в конфиге, ни установленного пакета: другие тесты сессии могли добавить SDK в sys.path
+    monkeypatch.setattr(external, "package_installed", lambda package: False)
     config_path = _write_config(tmp_path)
     code = cli.main(["run", "--config", str(config_path)])  # реальный шлюз, путей к SDK нет
     assert code == cli.EXIT_CONFIG

@@ -1,15 +1,22 @@
-"""Подключение внешнего кода SDK Тессы и сервиса карточек по путям из окружения.
+"""Подключение внешнего кода SDK Тессы и сервиса карточек (§8.0 ТЗ: в репозиторий не копируется).
 
-Пути задаются переменными TESSA_SDK_PATH и CARD_SERVICE_PATH (или в .env). Каталоги src
-этих репозиториев добавляются в sys.path, после чего пакеты tessa_client и robot_skills
-импортируются как обычные внешние пакеты. Если пути не заданы или неверны, код сообщает
-понятную причину, а зависящие тесты скипаются.
+Два способа, оба не тащат чужой код к нам:
+
+1. Каталоги репозиториев в переменных TESSA_SDK_PATH и CARD_SERVICE_PATH (или в .env) — их
+   подкаталоги src добавляются в sys.path.
+2. Пакеты `tessa_client` и `robot_skills`, уже установленные в окружение (например, колёсами из
+   внутреннего devpi) — тогда переменные не нужны.
+
+Путь имеет приоритет; если он задан, но пакета там нет, а в окружении пакет установлен, берётся
+установленный. Когда нет ни того, ни другого, код сообщает понятную причину, а зависящие тесты
+скипаются.
 """
 
 from __future__ import annotations
 
 import sys
 from dataclasses import dataclass
+from importlib.util import find_spec
 from pathlib import Path
 
 from pydantic import Field
@@ -17,6 +24,22 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 SDK_PACKAGE = "tessa_client"
 CARD_SERVICE_PACKAGE = "robot_skills"
+
+
+# Каталоги, которые этот модуль сам добавил в sys.path: пакет оттуда — не «установленный»
+_attached: set[Path] = set()
+
+
+def package_installed(package: str) -> bool:
+    """True, если пакет ставится в окружение (колесом), а не подхвачен из каталога по пути."""
+    try:
+        spec = find_spec(package)
+    except (ImportError, ValueError):
+        return False
+    if spec is None:
+        return False
+    origin = Path(spec.origin) if spec.origin else None
+    return origin is None or not any(origin.is_relative_to(entry) for entry in _attached)
 
 
 class ExternalPaths(BaseSettings):
@@ -34,15 +57,16 @@ class ExternalPaths(BaseSettings):
 
 @dataclass(frozen=True)
 class ExternalPathsStatus:
-    """Результат проверки внешних путей."""
+    """Результат проверки внешнего кода: откуда берётся каждый пакет."""
 
     available: bool
     reason: str | None
     source_dirs: tuple[Path, ...]
+    installed_packages: tuple[str, ...] = ()
 
 
 def resolve_external_paths(paths: ExternalPaths | None = None) -> ExternalPathsStatus:
-    """Проверяет, что оба пути заданы и содержат ожидаемые пакеты в подкаталоге src."""
+    """Ищет каждый пакет по пути из окружения, иначе среди установленных в окружение."""
     settings = paths if paths is not None else ExternalPaths()
     expected = (
         ("TESSA_SDK_PATH", settings.tessa_sdk_path, SDK_PACKAGE),
@@ -50,19 +74,26 @@ def resolve_external_paths(paths: ExternalPaths | None = None) -> ExternalPathsS
     )
     problems: list[str] = []
     source_dirs: list[Path] = []
+    installed: list[str] = []
     for env_name, root, package in expected:
-        if root is None:
-            problems.append(f"{env_name} не задан")
+        source_dir = None if root is None else root / "src"
+        if source_dir is not None and (source_dir / package / "__init__.py").is_file():
+            source_dirs.append(source_dir)
             continue
-        source_dir = root / "src"
-        if not (source_dir / package / "__init__.py").is_file():
-            problems.append(f"{env_name}={root}: пакет {package} не найден в {source_dir}")
+        if package_installed(package):
+            installed.append(package)
             continue
-        source_dirs.append(source_dir)
+        where = f"{env_name} не задан" if root is None else f"{env_name}={root}: нет {source_dir / package}"
+        problems.append(f"{where}, и пакет {package} не установлен в окружение")
     if problems:
         reason = "внешний код недоступен: " + "; ".join(problems)
         return ExternalPathsStatus(available=False, reason=reason, source_dirs=())
-    return ExternalPathsStatus(available=True, reason=None, source_dirs=tuple(source_dirs))
+    return ExternalPathsStatus(
+        available=True,
+        reason=None,
+        source_dirs=tuple(source_dirs),
+        installed_packages=tuple(installed),
+    )
 
 
 def ensure_external_paths(paths: ExternalPaths | None = None) -> ExternalPathsStatus:
@@ -71,6 +102,7 @@ def ensure_external_paths(paths: ExternalPaths | None = None) -> ExternalPathsSt
     if status.available:
         for source_dir in status.source_dirs:
             entry = str(source_dir)
+            _attached.add(source_dir)
             if entry not in sys.path:
                 sys.path.append(entry)
     return status
