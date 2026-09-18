@@ -17,7 +17,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 from tessa_export import __name__ as _package_name
-from tessa_export.config import CoverageSettings, ExportConfig, StatusSettings
+from tessa_export.config import CoverageSettings, ExportConfig, StatusSettings, TraversalSettings
 from tessa_export.files import FileRecord
 from tessa_export.models import CardSnapshot
 from tessa_export.storage import CARDS_DIR, CARDS_RAW_DIR
@@ -320,47 +320,24 @@ def mark_duplicates(documents: list[DocumentEntry]) -> int:
     return duplicates
 
 
-def build_manifest(
-    result: WalkResult,
-    file_records: dict[UUID, list[FileRecord]],
-    config: ExportConfig,
+def build_stats(
+    documents: list[DocumentEntry],
     *,
-    synthetic: bool = False,
-    now: datetime | None = None,
-    source: str = "tessa",
-) -> Manifest:
-    coverage = config.coverage
-    documents = [
-        document_entry(
-            visited.snapshot,
-            visited.depth,
-            visited.entry_paths,
-            file_records.get(card_id, []),
-            coverage,
-            config.status,
-        )
-        for card_id, visited in result.cards.items()
-    ]
-    duplicates = mark_duplicates(documents)
-
+    excluded: int,
+    errors: int,
+    skipped_links: int,
+    duplicates: int,
+    status_values: dict[str, str | None],
+    relation_types: dict[str, str | None],
+) -> ManifestStats:
+    """Сводная статистика по итоговому составу манифеста (общая для прогона и для слияния)."""
     all_files = [file for document in documents for file in document.files]
     skipped = [file for file in all_files if not file.downloaded]
-    status_values: dict[str, str | None] = {}
-    relation_types: dict[str, str | None] = {}
-    for visited in result.cards.values():
-        snapshot = visited.snapshot
-        status_id = snapshot.common_text("StatusID")
-        if status_id:
-            status_values.setdefault(status_id, snapshot.common_text("StatusNameStatus"))
-        for link in snapshot.outgoing:
-            if link.ref_type_name:
-                relation_types.setdefault(link.ref_type_name, link.ref_type_reverse_name)
-
-    stats = ManifestStats(
+    return ManifestStats(
         documents=len(documents),
-        excluded=len(result.excluded),
-        errors=len(result.errors),
-        skipped_links=len(result.skipped_links),
+        excluded=excluded,
+        errors=errors,
+        skipped_links=skipped_links,
         files_total=len(all_files),
         files_downloaded=len(all_files) - len(skipped),
         files_skipped=len(skipped),
@@ -376,13 +353,59 @@ def build_manifest(
         status_values=status_values,
         relation_types=relation_types,
     )
+
+
+def build_manifest(
+    result: WalkResult,
+    file_records: dict[UUID, list[FileRecord]],
+    config: ExportConfig,
+    *,
+    synthetic: bool = False,
+    now: datetime | None = None,
+    source: str = "tessa",
+    traversal: TraversalSettings | None = None,
+) -> Manifest:
+    coverage = config.coverage
+    documents = [
+        document_entry(
+            visited.snapshot,
+            visited.depth,
+            visited.entry_paths,
+            file_records.get(card_id, []),
+            coverage,
+            config.status,
+        )
+        for card_id, visited in result.cards.items()
+    ]
+    duplicates = mark_duplicates(documents)
+
+    status_values: dict[str, str | None] = {}
+    relation_types: dict[str, str | None] = {}
+    for visited in result.cards.values():
+        snapshot = visited.snapshot
+        status_id = snapshot.common_text("StatusID")
+        if status_id:
+            status_values.setdefault(status_id, snapshot.common_text("StatusNameStatus"))
+        for link in snapshot.outgoing:
+            if link.ref_type_name:
+                relation_types.setdefault(link.ref_type_name, link.ref_type_reverse_name)
+
+    stats = build_stats(
+        documents,
+        excluded=len(result.excluded),
+        errors=len(result.errors),
+        skipped_links=len(result.skipped_links),
+        duplicates=duplicates,
+        status_values=status_values,
+        relation_types=relation_types,
+    )
     return Manifest(
         created_at=now or datetime.now(UTC),
         tool=_package_name,
         source=source,
         synthetic=synthetic,
         seed_ids=list(result.seed_ids),
-        traversal=config.traversal.model_dump(),
+        traversal=(traversal or config.traversal).model_dump(),
         allowed_extensions=list(config.files.allowed_extensions),
         exclude_rules=len(config.exclude_rules),
         documents=documents,
@@ -438,3 +461,64 @@ def build_links_graph(result: WalkResult) -> LinksGraph:
         edges=[_edge_entry(edge) for edge in result.edges],
         dangling_edges=[_edge_entry(edge) for edge in result.dangling_edges],
     )
+
+
+def merge_manifests(previous: Manifest, current: Manifest) -> Manifest:
+    """Накопленный манифест + текущий прогон (режим синхронизации приказов).
+
+    Документы прошлых прогонов сохраняются как есть, документы текущего прогона заменяют
+    одноимённые. Исключения, ошибки и непройденные связи прошлых прогонов остаются только для
+    карточек, которых этот прогон не касался: всё, что перепроверено, берётся из текущего.
+    Дубли файлов и статистика пересчитываются по объединённому составу.
+    """
+    documents: dict[UUID, DocumentEntry] = {item.card_id: item for item in previous.documents}
+    documents.update({item.card_id: item for item in current.documents})
+    merged = list(documents.values())
+    for document in merged:
+        for file in document.files:
+            file.duplicate_of = None
+    duplicates = mark_duplicates(merged)
+
+    touched = {item.card_id for item in current.documents}
+    touched |= {item.card_id for item in current.excluded} | {item.card_id for item in current.errors}
+    excluded = [
+        item for item in previous.excluded if item.card_id not in touched and item.card_id not in documents
+    ] + current.excluded
+    errors = [
+        item for item in previous.errors if item.card_id not in touched and item.card_id not in documents
+    ] + current.errors
+    skipped_links = [
+        item for item in previous.skipped_links if item.from_card_id not in touched
+    ] + current.skipped_links
+
+    return current.model_copy(
+        update={
+            "seed_ids": list(dict.fromkeys([*previous.seed_ids, *current.seed_ids])),
+            "documents": merged,
+            "excluded": excluded,
+            "errors": errors,
+            "skipped_links": skipped_links,
+            "stats": build_stats(
+                merged,
+                excluded=len(excluded),
+                errors=len(errors),
+                skipped_links=len(skipped_links),
+                duplicates=duplicates,
+                status_values={**previous.stats.status_values, **current.stats.status_values},
+                relation_types={**previous.stats.relation_types, **current.stats.relation_types},
+            ),
+        }
+    )
+
+
+def merge_links_graphs(previous: LinksGraph, current: LinksGraph, in_set: set[UUID]) -> LinksGraph:
+    """Рёбра обоих прогонов; висячее ребро становится обычным, если второй конец уже в сете."""
+    edges: dict[tuple[UUID, UUID], LinkEdgeEntry] = {}
+    for edge in (*previous.edges, *previous.dangling_edges, *current.edges, *current.dangling_edges):
+        key = (edge.from_id, edge.to_id)
+        known = edges.get(key)
+        if known is None or (known.relation_type is None and edge.relation_type is not None):
+            edges[key] = edge
+    inside = [edge for edge in edges.values() if edge.from_id in in_set and edge.to_id in in_set]
+    outside = [edge for edge in edges.values() if edge.from_id not in in_set or edge.to_id not in in_set]
+    return LinksGraph(edges=inside, dangling_edges=outside)

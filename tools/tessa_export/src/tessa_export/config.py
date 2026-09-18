@@ -206,6 +206,66 @@ class StatusSettings(StrictModel):
     )
 
 
+class ViewValue(StrictModel):
+    """Одно значение критерия фильтра представления."""
+
+    value: Any = Field(description="Значение, как его отправляет веб-клиент Тессы")
+    text: str | None = Field(default=None, description="Отображаемый текст значения")
+
+
+class ViewParameter(StrictModel):
+    """Фильтр по одному параметру представления (JsonViewMetadata.Parameters[].Alias)."""
+
+    name: str = Field(description="Алиас параметра представления")
+    operand: str = Field(default="Equality", description="Оператор: Equality, Contains, GreatOrEquals…")
+    values: list[ViewValue] = Field(default_factory=list, description="Значения критерия")
+
+
+class OrdersSettings(StrictModel):
+    """Синхронизация приказов (запрос заказчика 2026-09-18, вне ТЗ).
+
+    Перечень приказов берётся из представления Тессы: алиас и параметры фильтра заполняются по
+    рабочему контуру заказчика (`tessa-export views` показывает доступные представления, их колонки
+    и параметры). Исключение по состоянию применяется дважды: по колонке представления, если она в
+    нём есть, и обязательно по полю карточки `DocumentCommonInfo.StateID` после её получения.
+    """
+
+    view_alias: str | None = Field(
+        default=None, description="Алиас представления со списком приказов; без него команда не работает"
+    )
+    subset: str | None = Field(default=None, description="Имя подмножества представления, если нужно")
+    parameters: list[ViewParameter] = Field(
+        default_factory=list, description="Фильтры представления (вид документа, подразделение и т.п.)"
+    )
+    id_column: str = Field(default="DocID", description="Колонка представления с ID карточки документа")
+    state_column: str | None = Field(
+        default="StateID", description="Колонка с состоянием маршрута; null — в представлении её нет"
+    )
+    exclude_state_ids: list[int] = Field(
+        default=[6],
+        description=(
+            "Состояния, которые не выгружаются. 6 = $KrStates_Doc_Registered «Зарегистрировано» "
+            "(указание заказчика 2026-09-18). Действует только здесь, правило статуса в секции status "
+            "не меняется"
+        ),
+    )
+    match: dict[str, list[str]] = Field(
+        default_factory=dict,
+        description=(
+            "Клиентский фильтр строк: колонка → регэкспы без учёта регистра (например "
+            "DocTypeName: ['приказ']). Нужен, если представление отдаёт не только приказы"
+        ),
+    )
+    sort_column: str | None = Field(default=None, description="Колонка сортировки для устойчивых страниц")
+    sort_descending: bool = Field(default=False, description="Сортировка по убыванию")
+    page_limit: int = Field(default=200, ge=1, description="Строк на странице представления")
+    max_pages: int = Field(default=200, ge=1, description="Предохранитель: сколько страниц читать максимум")
+    max_documents: int = Field(default=5000, ge=1, description="Предохранитель: сколько приказов выгружать")
+    max_depth: int = Field(
+        default=0, ge=0, description="Глубина обхода связей от приказа; 0 — только сами приказы"
+    )
+
+
 class ExportConfig(StrictModel):
     tessa: TessaSettings
     external: ExternalCodeSettings
@@ -217,6 +277,7 @@ class ExportConfig(StrictModel):
     files: FilesSettings = Field(default_factory=FilesSettings)
     coverage: CoverageSettings = Field(default_factory=CoverageSettings)
     status: StatusSettings = Field(default_factory=StatusSettings)
+    orders: OrdersSettings = Field(default_factory=OrdersSettings)
     log_level: str = Field(default="INFO", description="Уровень логирования")
 
     def resolve_credentials(self) -> tuple[str, str]:

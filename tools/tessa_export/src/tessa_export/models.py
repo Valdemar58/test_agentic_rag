@@ -6,10 +6,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from typing import Any, Protocol
 from uuid import UUID
+
+from tessa_export.config import ViewParameter
 
 COMMON_SECTION = "DocumentCommonInfo"
 OUTGOING_SECTION = "OutgoingRefDocs"
@@ -104,6 +107,25 @@ class DownloadedContent:
     content_type: str | None = None
 
 
+@dataclass(frozen=True)
+class ViewMeta:
+    """Представление Тессы в перечне доступных: алиас, подпись, колонки и параметры фильтра."""
+
+    alias: str
+    caption: str | None = None
+    columns: list[str] = field(default_factory=list)
+    parameters: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class ViewPage:
+    """Страница результата представления: позиционные строки уже разложены по именам колонок."""
+
+    columns: list[str]
+    rows: list[dict[str, Any]]
+    row_count: int = 0
+
+
 class TessaGateway(Protocol):
     def check_connection(self) -> None:
         """Проверяет доступ к серверу и учётные данные до начала обхода."""
@@ -114,6 +136,33 @@ class TessaGateway(Protocol):
     def download_file(self, card_id: UUID, file: FileInfo) -> DownloadedContent: ...
 
     def close(self) -> None: ...
+
+
+class ViewSource(Protocol):
+    """Чтение представлений Тессы: перечень документов берётся только отсюда (§8 API Тессы)."""
+
+    def list_views(self) -> list[ViewMeta]: ...
+
+    def view_page(
+        self,
+        alias: str,
+        parameters: Sequence[ViewParameter] = (),
+        *,
+        subset: str | None = None,
+        sorting: tuple[str, bool] | None = None,
+        page_offset: int | None = None,
+        page_limit: int | None = None,
+    ) -> ViewPage: ...
+
+
+class TessaViewGateway(TessaGateway, ViewSource, Protocol):
+    """Шлюз, который умеет и карточки, и представления (нужен режиму синхронизации приказов)."""
+
+
+def rows_by_column(columns: Sequence[str], rows: Sequence[Sequence[Any]]) -> list[dict[str, Any]]:
+    """Позиционные строки представления → словари по именам колонок; лишние значения отбрасываются."""
+    names = list(columns)
+    return [dict(zip(names, row, strict=False)) for row in rows]
 
 
 def _optional_uuid(value: Any) -> UUID | None:

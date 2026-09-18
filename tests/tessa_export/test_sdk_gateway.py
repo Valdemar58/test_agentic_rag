@@ -15,7 +15,7 @@ import respx
 
 from contracts.card_service import CardServiceContract
 from contracts.external_paths import ExternalPaths
-from tessa_export.config import ExportConfig
+from tessa_export.config import ExportConfig, ViewParameter, ViewValue
 from tessa_export.gateway_sdk import SdkGateway
 from tessa_export.models import CardAccessError, CardNotFoundError, GatewayConnectionError, GatewayError
 
@@ -130,6 +130,63 @@ def test_tls_verification_is_off_by_default_and_error_gives_hint(
     with pytest.raises(GatewayConnectionError) as exc_info:
         gateway.check_connection()
     assert "verify_tls" not in str(exc_info.value)
+
+
+def test_views_listing_and_paged_rows(gateway: SdkGateway, tessa: respx.MockRouter) -> None:
+    tessa.get("/api/v1/views", name="views").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "Views": [
+                    {
+                        "Alias": "Orders",
+                        "Caption": "Приказы",
+                        "Columns": [{"Alias": "DocID"}, {"Alias": "StateID"}],
+                        "Parameters": [{"Alias": "DocType"}],
+                    }
+                ]
+            },
+        )
+    )
+    doc_id = "3a2d502f-d44e-4e8d-8c1e-d17fa72c9c3b"
+    tessa.post("/api/v1/views/get-data", name="get_data").mock(
+        return_value=httpx.Response(
+            200,
+            json={"RowCount::int": 1, "Columns": ["DocID", "StateID"], "Rows": [[doc_id, 6]]},
+        )
+    )
+
+    views = gateway.list_views()
+    assert [(view.alias, view.caption, view.columns, view.parameters) for view in views] == [
+        ("Orders", "Приказы", ["DocID", "StateID"], ["DocType"])
+    ]
+
+    page = gateway.view_page(
+        "Orders",
+        [ViewParameter(name="DocType", values=[ViewValue(value="order", text="Приказ")])],
+        sorting=("DocDate", True),
+        page_offset=2,
+        page_limit=50,
+    )
+    assert page.columns == ["DocID", "StateID"]
+    assert page.rows == [{"DocID": doc_id, "StateID": 6}]
+
+    body = json.loads(tessa["get_data"].calls.last.request.content)
+    assert body["ViewAlias"] == "Orders"
+    assert body["SortingColumns"] == [{"Alias": "DocDate", "Descending": True}]
+    names = {item["Name"]: item for item in body["Parameters"]}
+    assert names["DocType"]["CriteriaValues"][0]["CriteriaName"] == "Equality"
+    assert names["PageOffset"]["CriteriaValues"][0]["Values"][0]["Value::int"] == 2
+    assert names["PageLimit"]["CriteriaValues"][0]["Values"][0]["Value::int"] == 50
+
+
+def test_views_errors_are_mapped(gateway: SdkGateway, tessa: respx.MockRouter) -> None:
+    tessa.post("/api/v1/views/get-data").mock(return_value=httpx.Response(403, json={"Items": None}))
+    with pytest.raises(CardAccessError, match="представление «Orders»"):
+        gateway.view_page("Orders")
+    tessa.get("/api/v1/views").mock(return_value=httpx.Response(500, json={"Items": None}))
+    with pytest.raises(GatewayError, match="перечень представлений"):
+        gateway.list_views()
 
 
 def test_error_mapping(gateway: SdkGateway, tessa: respx.MockRouter) -> None:

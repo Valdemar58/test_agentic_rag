@@ -8,11 +8,12 @@
 from __future__ import annotations
 
 import mimetypes
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid5
 
-from tessa_export.config import CANCELLED_STATUS_ID
+from tessa_export.config import CANCELLED_STATUS_ID, ViewParameter
 from tessa_export.models import (
     COMMON_SECTION,
     INCOMING_SECTION,
@@ -24,6 +25,8 @@ from tessa_export.models import (
     GatewayError,
     LinkInfo,
     SectionSnapshot,
+    ViewMeta,
+    ViewPage,
 )
 from tessa_export.sample_files import minimal_docx_bytes, minimal_image_bytes, minimal_pdf_bytes
 
@@ -333,6 +336,10 @@ class FakeGateway:
         self.file_errors: dict[tuple[UUID, UUID], Exception] = {}
         self.get_calls: list[UUID] = []
         self.download_calls: list[tuple[UUID, UUID]] = []
+        self.views: dict[str, ViewMeta] = {}
+        self.view_data: dict[str, list[dict[str, Any]]] = {}
+        self.view_paging: dict[str, bool] = {}
+        self.view_calls: list[tuple[str, int | None, list[ViewParameter]]] = []
         self.closed = False
         self.connection_error: Exception | None = None
 
@@ -365,6 +372,46 @@ class FakeGateway:
             raise GatewayError(f"файл «{file.name}» карточки {card_id}: содержимое не задано (фейк)")
         content_type = mimetypes.guess_type(file.name)[0] or "application/octet-stream"
         return DownloadedContent(content=self.contents[key], file_name=file.name, content_type=content_type)
+
+    def add_view(
+        self,
+        alias: str,
+        columns: list[str],
+        rows: list[dict[str, Any]],
+        *,
+        caption: str | None = None,
+        parameters: list[str] | None = None,
+        paging: bool = True,
+    ) -> None:
+        """Регистрирует представление; paging=False имитирует представление без пагинации."""
+        self.views[alias] = ViewMeta(alias, caption, list(columns), list(parameters or []))
+        self.view_data[alias] = list(rows)
+        self.view_paging[alias] = paging
+
+    def list_views(self) -> list[ViewMeta]:
+        return list(self.views.values())
+
+    def view_page(
+        self,
+        alias: str,
+        parameters: Sequence[ViewParameter] = (),
+        *,
+        subset: str | None = None,
+        sorting: tuple[str, bool] | None = None,
+        page_offset: int | None = None,
+        page_limit: int | None = None,
+    ) -> ViewPage:
+        self.view_calls.append((alias, page_offset, list(parameters)))
+        if alias not in self.views:
+            raise GatewayError(f"представление «{alias}»: не найдено (фейк)")
+        columns = self.views[alias].columns
+        rows = self.view_data[alias]
+        if page_limit is not None and self.view_paging.get(alias, True):
+            start = ((page_offset or 1) - 1) * page_limit
+            rows = rows[start : start + page_limit]
+        elif page_limit is not None:
+            rows = rows[:page_limit]
+        return ViewPage(columns=list(columns), rows=[dict(row) for row in rows], row_count=len(rows))
 
     def close(self) -> None:
         self.closed = True

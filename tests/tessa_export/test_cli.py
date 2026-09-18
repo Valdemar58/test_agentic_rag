@@ -14,7 +14,7 @@ import structlog
 from tessa_export import cli
 from tessa_export.config import ExportConfig
 from tessa_export.fake import FakeGateway, build_demo_scenario, make_file, make_snapshot, stable_uuid
-from tessa_export.models import CardAccessError, GatewayConnectionError, TessaGateway
+from tessa_export.models import CardAccessError, GatewayConnectionError, TessaViewGateway
 
 A = stable_uuid("card", "A")
 
@@ -73,7 +73,7 @@ def test_run_with_fake_gateway_and_rerun_cleans_previous(
     gateway, _ = build_demo_scenario()
     seen: list[tuple[str, str]] = []
 
-    def factory(config: ExportConfig, username: str, password: str) -> TessaGateway:
+    def factory(config: ExportConfig, username: str, password: str) -> TessaViewGateway:
         seen.append((username, password))
         return gateway
 

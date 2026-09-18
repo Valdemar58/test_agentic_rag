@@ -11,12 +11,13 @@ from __future__ import annotations
 import contextlib
 import io
 import time
+from collections.abc import Sequence
 from typing import Any
 from uuid import UUID
 
 import httpx
 
-from tessa_export.config import ExportConfig
+from tessa_export.config import ExportConfig, ViewParameter
 from tessa_export.external import attach_external_code
 from tessa_export.models import (
     INCOMING_SECTION,
@@ -29,7 +30,10 @@ from tessa_export.models import (
     GatewayConnectionError,
     GatewayError,
     SectionSnapshot,
+    ViewMeta,
+    ViewPage,
     parse_links,
+    rows_by_column,
 )
 
 CARDS_GET_PATH = "/api/v1/cards/get"
@@ -59,10 +63,21 @@ class SdkGateway:
         from tessa_client.models.card_requests import CardGetRequest
         from tessa_client.models.card_responses import CardGetResponse
         from tessa_client.models.enums import CardGetMode, ValidationResultType
+        from tessa_client.models.view import (
+            CriteriaValue,
+            JsonRequestParameter,
+            RequestCriteria,
+            SortingColumn,
+        )
         from tessa_client.resources.cards import CardsResource
+        from tessa_client.resources.views import ViewsResource
         from tessa_client.typed_json import denormalize_tessa_json, normalize_tessa_json
 
         self._card_data_cls: Any = CardData
+        self._criteria_value_cls: Any = CriteriaValue
+        self._criteria_cls: Any = RequestCriteria
+        self._request_parameter_cls: Any = JsonRequestParameter
+        self._sorting_column_cls: Any = SortingColumn
         self._exc: Any = sdk_exceptions
         self._get_request_cls: Any = CardGetRequest
         self._get_response_cls: Any = CardGetResponse
@@ -90,6 +105,7 @@ class SdkGateway:
             headers={"Content-Type": "application/json"},
         )
         self._cards: Any = CardsResource(self._session, max_retries=tessa.max_retries)
+        self._views: Any = ViewsResource(self._session, max_retries=tessa.max_retries)
 
     def check_connection(self) -> None:
         """Открывает сессию заранее, чтобы ошибка логина или сети была видна сразу и понятно."""
@@ -132,9 +148,84 @@ class SdkGateway:
             content_type=downloaded.content_type,
         )
 
+    def list_views(self) -> list[ViewMeta]:
+        """Перечень доступных представлений с колонками и параметрами (команда views)."""
+        with contextlib.redirect_stdout(io.StringIO()):
+            try:
+                response = self._views.list()
+            except self._exc.TessaAPIError as exc:
+                raise self._map_view_error(exc, "перечень представлений") from exc
+            except (self._exc.TessaConnectionError, self._exc.TessaTimeoutError) as exc:
+                raise GatewayConnectionError(f"перечень представлений: {exc}") from exc
+        views: list[ViewMeta] = []
+        for item in response.views or []:
+            if not item.alias:
+                continue
+            views.append(
+                ViewMeta(
+                    alias=item.alias,
+                    caption=item.caption,
+                    columns=[column.alias or "" for column in item.columns or []],
+                    parameters=[parameter.alias or "" for parameter in item.parameters or []],
+                )
+            )
+        return views
+
+    def view_page(
+        self,
+        alias: str,
+        parameters: Sequence[ViewParameter] = (),
+        *,
+        subset: str | None = None,
+        sorting: tuple[str, bool] | None = None,
+        page_offset: int | None = None,
+        page_limit: int | None = None,
+    ) -> ViewPage:
+        sorting_columns = (
+            [self._sorting_column_cls(alias=sorting[0], descending=sorting[1])] if sorting else []
+        )
+        with contextlib.redirect_stdout(io.StringIO()):
+            try:
+                result = self._views.get_data(
+                    alias,
+                    [self._view_parameter(item) for item in parameters],
+                    subset_name=subset,
+                    sorting_columns=sorting_columns,
+                    page_offset=page_offset,
+                    page_limit=page_limit,
+                )
+            except self._exc.TessaAPIError as exc:
+                raise self._map_view_error(exc, f"представление «{alias}»") from exc
+            except (self._exc.TessaConnectionError, self._exc.TessaTimeoutError) as exc:
+                raise GatewayConnectionError(f"представление «{alias}»: {exc}") from exc
+        columns = [str(name) for name in result.columns or []]
+        return ViewPage(
+            columns=columns,
+            rows=rows_by_column(columns, result.rows or []),
+            row_count=int(result.row_count or 0),
+        )
+
     def close(self) -> None:
         self._session.close()
         self._auth.close()
+
+    def _view_parameter(self, parameter: ViewParameter) -> Any:
+        values = [
+            self._criteria_value_cls(value=item.value, text=item.text if item.text is not None else None)
+            for item in parameter.values
+        ]
+        return self._request_parameter_cls(
+            name=parameter.name,
+            criteria_values=[self._criteria_cls(operand=parameter.operand, values=values)],
+        )
+
+    def _map_view_error(self, exc: Any, subject: str) -> GatewayError:
+        status = getattr(exc, "status_code", None)
+        if isinstance(exc, self._exc.TessaAuthenticationError | self._exc.TessaPermissionError):
+            return CardAccessError(f"{subject}: нет доступа (HTTP {status}): {exc}")
+        if isinstance(exc, self._exc.TessaNotFoundError):
+            return CardNotFoundError(f"{subject}: не найдено (HTTP {status}): {exc}")
+        return GatewayError(f"{subject}: ошибка Тессы (HTTP {status}): {exc}")
 
     def _post_with_retries(self, path: str, body: dict[str, Any], card_id: UUID) -> httpx.Response:
         attempt = 0
