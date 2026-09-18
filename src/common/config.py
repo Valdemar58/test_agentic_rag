@@ -429,6 +429,11 @@ class AnswerSettings(StrictModel):
         ge=0,
         description="Сколько раз урезать свидетельства и повторить ответ, если промпт не влез в контекст",
     )
+    weak_evidence_score: float = Field(
+        ge=0,
+        le=1,
+        description="Ниже этой лучшей оценки поиска промпт ответа предупреждает о вероятном отказе",
+    )
 
 
 class VerifySettings(StrictModel):
@@ -469,6 +474,10 @@ class AgentSettings(StrictModel):
     )
     rewrite: RewriteSettings
     glossary: AgentGlossarySettings
+    separate_searches: int = Field(
+        ge=0,
+        description="Сколько отдельных запросов многочастного вопроса раннер выполняет сам до цикла (AC-1.1)",
+    )
 
     def llm_options(self, role: LlmRole) -> LlmRequestOptions:
         """Сэмплинг, лимит и режим размышлений для роли — из `llm` и `thinking`."""

@@ -176,8 +176,12 @@ def compute_metrics(
     judged = [item for item in done if item.judged is not None]
     statements = sum(item.judge.statements for item in judged if item.judge)
     with_citation = sum(item.judge.with_citation for item in judged if item.judge)
-    citations = sum(item.judge.citations for item in judged if item.judge)
-    supported = sum(item.judge.supported for item in judged if item.judge)
+    # ссылки в отказе не подтверждают утверждений по определению («вот что нашлось, оно не о том»),
+    # поэтому поддержка ссылок считается по ответам, которые что-то утверждают; отказы меряет M4
+    answering = [item for item in judged if not item.refusal_ok]
+    citations = sum(item.judge.citations for item in answering if item.judge)
+    supported = sum(item.judge.supported for item in answering if item.judge)
+    refusal_citations = sum(item.judge.citations for item in judged if item.judge) - citations
     resolved = sum(not item.unresolved for item in done)
 
     no_answer = by_category.get("no_answer", [])
@@ -240,7 +244,8 @@ def compute_metrics(
             value=citation_support,
             target="≥ 90 %",
             reached=_status(citation_support, 0.90),
-            detail=f"подтверждающих ссылок {supported} из {citations} (судья)",
+            detail=f"подтверждающих ссылок {supported} из {citations} (судья; "
+            f"ссылки {refusal_citations} отказов не в счёте — их меряет M4)",
         ),
         Metric(
             id="M4",

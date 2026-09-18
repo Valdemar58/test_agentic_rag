@@ -102,6 +102,21 @@ class ToolRun:
         return [record.query for record in self.calls if record.query]
 
     @property
+    def best_score(self) -> float | None:
+        """Лучшая оценка reranker'а среди найденных в этом вопросе фрагментов; None — поиска не было.
+
+        Оценка отличает «нашли по теме» от «нашли что попало»: на вопросах без ответа в корпусе лучшая
+        оценка ≤ 0,1, на вопросах с ответом — 0,7–1,0 (замер на голден-сете 2026-09-18)."""
+        scores = [
+            fragment.score
+            for alias in self.fragment_aliases
+            if (fragment := self.registry.fragment_by_alias(alias)) is not None
+            and alias not in self.cached_fragment_aliases
+            and fragment.score is not None
+        ]
+        return max(scores) if scores else None
+
+    @property
     def exhausted(self) -> bool:
         """Бюджет вызовов или контекст исчерпаны — ответ может быть неполным (FR-1)."""
         return self.budget_exhausted or self.context_exhausted

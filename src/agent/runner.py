@@ -35,6 +35,7 @@ from agent.prompts import (
     FORCED_SEARCH_NOTE,
     NO_ANSWER_PHRASE,
     NO_HITS_NOTES,
+    PLANNED_SEARCH_NOTE,
     VERIFY_SYSTEM_PROMPT,
     answer_system_prompt,
     answer_user_message,
@@ -44,7 +45,9 @@ from agent.prompts import (
     with_cached_evidence,
     with_forced_search,
     with_glossary,
+    with_planned_search,
     with_verification_feedback,
+    with_weak_evidence,
 )
 from agent.rendering import (
     TOOL_GLOSSARY,
@@ -313,6 +316,13 @@ class AgentRunner:
                     user_message = with_cached_evidence(user_message, run.consume_context(cached))
                     cache_used = True
                     yield CacheUsed(document_aliases=documents, fragment_aliases=fragments)
+            planned = agent_settings.separate_searches
+            if not cache_used and planned and len(rewritten.queries) >= 2:
+                results: list[str] = []
+                async for event in self._planned_search(rewritten.queries[:planned], run, results):
+                    yield event
+                if results:
+                    user_message = with_planned_search(user_message, results)
             async for event in self._traced_loop(user_message, run):
                 if isinstance(event, LoopNotes):
                     notes = event.text  # заметки выдаются после ограждения: оно может их заменить
@@ -530,6 +540,38 @@ class AgentRunner:
                 metadata={"budget_exhausted": run.budget_exhausted, "search_queries": run.search_queries},
             )
 
+    async def _planned_search(
+        self, queries: Sequence[str], run: ToolRun, results: list[str]
+    ) -> AsyncIterator[AgentEvent]:
+        """Поиск по каждой части многочастного вопроса до цикла (AC-1.1, M1 multi_doc).
+
+        Прогон голден-сета 2026-09-18: на вопросах «документ и изменения к нему» модель делала 2–3 вызова
+        из восьми и отвечала по первой находке, поэтому запросы, на которые шаг переписывания разбил
+        вопрос, раннер выполняет сам; результаты уходят в цикл, а свидетельства — в реестр."""
+        yield LoopText(text=PLANNED_SEARCH_NOTE)
+        with self._tracing.step("planned_search", kind="tool", input={"queries": list(queries)}) as step:
+            first_call = len(run.calls)
+            for query in queries:
+                arguments = {"query": query}
+                yield ToolStarted(
+                    tool=TOOL_SEARCH,
+                    arguments=arguments,
+                    status=status_text_for(TOOL_SEARCH, arguments, run.registry),
+                )
+                before = len(run.calls)
+                text = await self._tools.call(TOOL_SEARCH, arguments, run)
+                record = run.calls[-1] if len(run.calls) > before else None
+                if record is None:
+                    yield ToolFinished(tool=TOOL_SEARCH, summary=cut(text, 120), ok=False, seconds=0.0)
+                    continue
+                yield ToolFinished(
+                    tool=TOOL_SEARCH, summary=record.summary, ok=record.ok, seconds=record.seconds
+                )
+                if record.ok:
+                    results.append(text)
+            found = [alias for record in run.calls[first_call:] for alias in record.fragment_aliases]
+            step.update(output={"fragments": found})
+
     async def _forced_search(
         self, question: str, query: str, user_message: str, run: ToolRun
     ) -> AsyncIterator[AgentEvent]:
@@ -702,6 +744,11 @@ class AgentRunner:
         user_message = answer_user_message(question, facts, evidence)
         if feedback:
             user_message = with_verification_feedback(user_message, feedback)
+        best = run.best_score
+        if best is not None and best < self._config.agent.answer.weak_evidence_score:
+            # прогон голден-сета 2026-09-18: на вопросах без ответа в корпусе лучшая оценка поиска ≤ 0,10,
+            # на вопросах с ответом — 0,7–1,0; низкая оценка — сигнал модели проверить отношение к вопросу
+            user_message = with_weak_evidence(user_message, best)
         messages = [
             ChatMessage(role="system", content=answer_system_prompt(budget_exhausted=run.budget_exhausted)),
             ChatMessage(role="user", content=user_message),

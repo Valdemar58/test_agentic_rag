@@ -784,3 +784,44 @@ async def test_model_links_block_is_stripped_before_verification(harness: Harnes
     assert len(harness.llms["answer"].inputs) == 2, "весь черновик отклонён — ответ составлен заново"
     for messages in harness.llms["verify"].inputs:
         assert "Ссылки" not in str(messages[1].content)
+
+
+async def test_planned_search_runs_each_query_of_a_multipart_question(harness: Harness) -> None:
+    """Прогон голден-сета 2026-09-18: модель делала 2–3 вызова из восьми и отвечала по первой находке."""
+    rewrite = (
+        '{"query": "отчёт и инструкции", "queries": ["отчёт по охране труда", "инструкции по охране труда"],'
+        ' "intent": "documents"}'
+    )
+    runner = harness.runner(
+        ["Заметки: обе части вопроса закрыты [S1]."],
+        ["Ответ по обеим частям [S1]."],
+        rewrite_steps=[rewrite],
+        tracing=(tracing := RecordingTracing()),
+    )
+    events = [event async for event in runner.run("Отчёт и инструкции по охране труда?", harness.session())]
+
+    searches = [
+        event.arguments["query"]
+        for event in events
+        if isinstance(event, ToolStarted) and event.tool == TOOL_SEARCH
+    ]
+    assert searches[:2] == ["отчёт по охране труда", "инструкции по охране труда"], "оба запроса выполнены"
+    assert [item["name"] for item in tracing.steps].count("planned_search") == 1
+    loop_message = str(harness.llms["tool_loop"].inputs[0][-1].content)
+    assert "поиск по каждой части уже выполнен" in loop_message
+    ready = events[-1]
+    assert isinstance(ready, AnswerReady) and not ready.answer.refused
+
+
+async def test_weak_evidence_warning_goes_to_the_answer_prompt(harness: Harness) -> None:
+    """Прогон голден-сета 2026-09-18: на вопросах без ответа в корпусе лучшая оценка поиска ≤ 0,10."""
+    runner = harness.runner(
+        [tool_step(TOOL_SEARCH, query="парковка велосипедов"), "Заметки: ничего по теме [S1]."],
+        [f"{NO_ANSWER_PHRASE} про велосипеды в документах нет."],
+    )
+    events = [event async for event in runner.run("Компенсация за велосипед?", harness.session())]
+
+    answer_prompt = str(harness.llms["answer"].inputs[0][-1].content)
+    assert "Оценки релевантности найденных фрагментов низкие" in answer_prompt
+    ready = events[-1]
+    assert isinstance(ready, AnswerReady) and ready.answer.refused
