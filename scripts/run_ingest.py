@@ -10,6 +10,8 @@
       фаза 2 считает эмбеддинги bge-m3 на свободном GPU и пишет в Qdrant; реестр — PostgreSQL.
       --force переразбирает всё; --no-gpu-switch не трогает контейнеры (профили поднимает оператор);
       --restore-runtime в конце поднимает профиль runtime обратно и собирает глоссарий.
+      Каталог корпуса сверяется с прошлым прогоном: другой каталог означает, что из индекса
+      удалится всё, чего в нём нет, поэтому такой прогон требует явного --switch-corpus.
 
   uv run python scripts/run_ingest.py glossary
       сборка глоссария (FR-5) по уже построенному индексу: разделы «Термины и определения» и
@@ -187,6 +189,10 @@ async def run_ingest(config: AppConfig, settings: Settings, corpus: Corpus, args
         runner = IngestRunner(
             config, corpus=corpus, pipeline=pipeline, index=index, registry=registry, force=args.force
         )
+        change = await runner.corpus_change()
+        if change is not None and not args.switch_corpus:
+            print(change.message())
+            return EXIT_CONFIG
         work = await runner.preflight()
         print(f"План: {work.summary()}")
         orchestrator = GpuOrchestrator(None if args.no_gpu_switch else Stack(config))
@@ -231,6 +237,11 @@ def main(argv: list[str] | None = None) -> int:
     run_parser.add_argument("--corpus", type=Path, help="каталог архива экспорта")
     run_parser.add_argument("--force", action="store_true", help="переразобрать все файлы, игнорируя реестр")
     run_parser.add_argument("--no-gpu-switch", action="store_true", help="не управлять контейнерами стенда")
+    run_parser.add_argument(
+        "--switch-corpus",
+        action="store_true",
+        help="разрешить прогон по другому каталогу корпуса (из индекса удалится всё, чего в нём нет)",
+    )
     run_parser.add_argument("--restore-runtime", action="store_true", help="в конце поднять профиль runtime")
     subparsers.add_parser("glossary", help="собрать глоссарий по индексу (нужен профиль runtime)")
     args = parser.parse_args(argv)

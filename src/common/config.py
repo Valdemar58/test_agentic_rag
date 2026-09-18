@@ -130,6 +130,14 @@ class ModelsSettings(StrictModel):
 class PathsSettings(StrictModel):
     corpus_dir: Path = Field(description="Распакованный архив экспорта (cards, files, manifest.json)")
     work_dir: Path = Field(description="Рабочие данные инжеста: кэш разбора, отчёты")
+    orders_dir: Path = Field(
+        default=Path("data/orders"),
+        description="Каталог синхронизации приказов (scripts/sync_orders.py): накапливается между прогонами",
+    )
+    export_config: Path = Field(
+        default=Path("tools/tessa_export/config.yaml"),
+        description="Конфиг экспорт-скрипта для синхронизации приказов",
+    )
 
     @property
     def corpus_dir_absolute(self) -> Path:
@@ -138,6 +146,14 @@ class PathsSettings(StrictModel):
     @property
     def work_dir_absolute(self) -> Path:
         return _absolute(self.work_dir)
+
+    @property
+    def orders_dir_absolute(self) -> Path:
+        return _absolute(self.orders_dir)
+
+    @property
+    def export_config_absolute(self) -> Path:
+        return _absolute(self.export_config)
 
 
 class EmbeddingSettings(StrictModel):

@@ -68,10 +68,15 @@ class MemoryRegistry:
     def __init__(self) -> None:
         self.rows: dict[FileKey, Entry] = {}
         self.runs: dict[int, tuple[str, RunCounters, str | None]] = {}
+        self.corpus_paths: list[str] = []
+
+    async def last_corpus_path(self) -> str | None:
+        return self.corpus_paths[-1] if self.corpus_paths else None
 
     async def start_run(self, corpus_path: str, *, synthetic: bool) -> int:
         run_id = len(self.runs) + 1
         self.runs[run_id] = ("running", RunCounters(), None)
+        self.corpus_paths.append(corpus_path)
         return run_id
 
     async def finish_run(
@@ -302,3 +307,24 @@ def test_card_change_updates_payload_without_reparse_and_vanished_file_is_remove
     )
     report = _run(_runner(output, parser, registry, index))
     assert report.removed >= 1 and index.count() == 2
+
+
+def test_corpus_change_is_reported_before_the_index_is_cleaned(tmp_path: Path) -> None:
+    """Прогон по другому каталогу корпуса стирает из индекса всё чужое — сначала предупреждение."""
+    first, second = tmp_path / "corpus_a", tmp_path / "corpus_b"
+    _export(first)
+    _export(second, with_memo=False)
+    parser, registry = CountingParser(), MemoryRegistry()
+    index = ChunkIndex(QdrantClient(":memory:"), CONFIG.qdrant, 8)
+
+    _run(_runner(first, parser, registry, index))
+    assert asyncio.run(_runner(first, parser, registry, index).corpus_change()) is None
+
+    change = asyncio.run(_runner(second, parser, registry, index).corpus_change())
+    assert change is not None
+    assert change.removed_files == 1  # записка есть только в первом корпусе
+    assert str(first) in change.message() and "--switch-corpus" in change.message()
+
+    # после явного прогона по второму корпусу предупреждения больше нет
+    _run(_runner(second, parser, registry, index))
+    assert asyncio.run(_runner(second, parser, registry, index).corpus_change()) is None

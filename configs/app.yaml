@@ -71,6 +71,10 @@ paths:
   corpus_dir: data/corpus
   # Рабочие данные инжеста: кэш разбора Docling, отчёты.
   work_dir: data/work
+  # Синхронизация приказов (scripts/sync_orders.py, запрос заказчика 2026-09-18): каталог
+  # накапливается между прогонами, конфиг экспорта — тот же, что у tessa-export.
+  orders_dir: data/orders
+  export_config: tools/tessa_export/config.yaml
 
 embedding:
   # BAAI/bge-m3 (models.embedding): dense + sparse (lexical weights) из одной модели.

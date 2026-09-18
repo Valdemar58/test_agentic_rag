@@ -17,6 +17,7 @@ import time
 from collections import Counter
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from common.config import AppConfig
 from ingest.corpus import Corpus, CorpusIssue
@@ -93,6 +94,23 @@ class RunReport:
 
 
 @dataclass(frozen=True)
+class CorpusChange:
+    """Прогон указывает на другой каталог корпуса, чем предыдущий: индекс будет частично очищен."""
+
+    previous: str
+    current: str
+    removed_files: int
+
+    def message(self) -> str:
+        return (
+            f"СМЕНА КОРПУСА: прошлый прогон индексировал {self.previous}, сейчас указан {self.current}.\n"
+            f"Файлов в индексе, которых нет в новом корпусе: {self.removed_files} — они будут удалены.\n"
+            "Если это намеренно, повторите команду с --switch-corpus; "
+            f"если нет — укажите --corpus {self.previous}."
+        )
+
+
+@dataclass(frozen=True)
 class WorkPlan:
     """Оценка объёма до запуска: нужна ли VLM и сколько файлов ждёт разбора."""
 
@@ -112,6 +130,14 @@ class WorkPlan:
             f"(из них через dots.mocr {self.vlm_files}), без изменений {self.unchanged}, "
             f"пропущено правилом {self.skipped}"
         )
+
+
+def _same_path(first: str, second: str) -> bool:
+    """Сравнение каталогов с учётом относительных путей; несуществующий путь сравнивается как текст."""
+    try:
+        return Path(first).resolve() == Path(second).resolve()
+    except OSError:
+        return first == second
 
 
 def metadata_fingerprint(document: DocumentMetadata, plan: FilePlan) -> str:
@@ -180,6 +206,16 @@ class IngestRunner:
                     work.append(_Work(metadata, plan, item.fingerprint, item.previous, decision))
             self._work = work
         return self._work
+
+    async def corpus_change(self) -> CorpusChange | None:
+        """Сверяет каталог корпуса с прошлым прогоном: None — тот же корпус или индекс пуст."""
+        previous = await self._registry.last_corpus_path()
+        current = str(self._corpus.export_dir)
+        if previous is None or _same_path(previous, current):
+            return None
+        work = await self._collect()
+        seen = {item.key for item in work}
+        return CorpusChange(previous, current, sum(key not in seen for key in self._known))
 
     async def preflight(self) -> WorkPlan:
         work = await self._collect()

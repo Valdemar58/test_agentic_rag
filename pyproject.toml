@@ -112,7 +112,7 @@ known-first-party = [
 python_version = "3.13"
 strict = true
 plugins = ["pydantic.mypy"]
-mypy_path = "src,tools/tessa_export/src"
+mypy_path = "src,tools/tessa_export/src,scripts"
 files = ["src", "scripts", "tests", "tools/tessa_export/src", "alembic", "mocks"]
 namespace_packages = true
 explicit_package_bases = true
@@ -150,8 +150,9 @@ disallow_untyped_calls = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# корень — для пакета mocks (он не устанавливается в окружение, в отличие от src)
-pythonpath = ["."]
+# корень — для пакета mocks (он не устанавливается в окружение, в отличие от src);
+# scripts — точки входа импортируются в тестах так же, как при запуске из командной строки
+pythonpath = [".", "scripts"]
 # Живые сценарии агента (маркер scenario) по умолчанию исключены: ~10 минут на живом vLLM;
 # запуск — uv run pytest -m scenario
 addopts = "--import-mode=importlib -ra -m 'not scenario'"

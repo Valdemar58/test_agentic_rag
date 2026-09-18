@@ -83,6 +83,8 @@ class IndexedFileLike(Protocol):
 class Registry(Protocol):
     """Интерфейс реестра для прогона: PostgreSQL в проде, память в тестах."""
 
+    async def last_corpus_path(self) -> str | None: ...
+
     async def start_run(self, corpus_path: str, *, synthetic: bool) -> int: ...
 
     async def finish_run(
@@ -99,6 +101,12 @@ class Registry(Protocol):
 class FileRegistry:
     def __init__(self, factory: async_sessionmaker[AsyncSession]) -> None:
         self._factory = factory
+
+    async def last_corpus_path(self) -> str | None:
+        """Каталог корпуса последнего прогона: по нему видно, что индекс собирали из другого архива."""
+        statement = select(IngestRun.corpus_path).order_by(IngestRun.id.desc()).limit(1)
+        async with session_scope(self._factory) as session:
+            return (await session.execute(statement)).scalars().first()
 
     async def start_run(self, corpus_path: str, *, synthetic: bool) -> int:
         async with session_scope(self._factory) as session:
