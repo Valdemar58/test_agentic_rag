@@ -195,7 +195,46 @@ uv run python scripts/sync_orders.py
 | `ИТОГ: сет НЕ ПРИГОДЕН` после выгрузки | проверки §8.3 оценивают состав голден-корпуса (виды документов, доля сканов, открылись ли все файлы) — к индексации архив пригоден, инжест продолжается. Что именно не сошлось — в `validation_report.md` |
 | Вопрос в UI висит «Модель ещё загружается» | vLLM поднимает модель после старта (до 10 минут на холодную) |
 | Инжест жалуется на GPU | одновременно подняты профили `runtime` и `ingest`; они взаимоисключены, `stack.py up … --switch` переключает |
+| `could not select device driver "nvidia"` | не установлен NVIDIA Container Toolkit, либо его регистрация пропала из `/etc/docker/daemon.json`. Восстанавливается `nvidia-ctk runtime configure --runtime=docker` (файл дополняется, `data-root` не теряется) |
+| `unable to create new device filters program: load program: invalid argument` | `nvidia-container-cli` не может собрать cgroup-фильтр устройств на этом ядре (проверено на РЕД ОС, cgroup v2, тулкит 1.19.1). Решение — отдавать GPU через CDI, см. ниже |
 | Логи | выгрузка — `data/orders/tessa_export.log`; инжест — `data/work/reports/`; контейнеры — `uv run python scripts/stack.py compose -- logs -f <сервис>` |
+
+## GPU через CDI
+
+Штатно compose просит GPU через драйвер `nvidia` (`deploy.resources.reservations.devices`). На
+части хостов `nvidia-container-cli` не может собрать cgroup-фильтр устройств и контейнер не
+стартует. Тогда GPU отдаётся через CDI — на cgroup-фильтр этот путь не опирается:
+
+```bash
+sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml
+docker run --rm --device nvidia.com/gpu=all --entrypoint nvidia-smi vllm/vllm-openai:v0.29.0-cu129
+```
+
+Увидели таблицу `nvidia-smi` — положите рядом с `docker-compose.yml` файл
+`docker-compose.override.yml` (он в `.gitignore`, compose подхватывает его автоматически):
+
+```yaml
+services:
+  vllm-qwen:
+    devices: ["nvidia.com/gpu=all"]
+    deploy:
+      resources:
+        reservations:
+          devices: []
+  vllm-dots:
+    devices: ["nvidia.com/gpu=all"]
+    deploy:
+      resources:
+        reservations:
+          devices: []
+```
+
+Пустой список в `reservations.devices` обязателен: иначе compose продолжит требовать драйвер
+`nvidia` и упрётся в ту же ошибку.
+
+Перенос хранилища Docker на другой раздел (`data-root` в `/etc/docker/daemon.json`) файл не
+перезаписывайте целиком — там же лежит регистрация NVIDIA-рантайма. Дополняйте JSON или
+вызывайте `nvidia-ctk runtime configure --runtime=docker` после правки.
 
 ## Закрытый контур (нет интернета)
 
