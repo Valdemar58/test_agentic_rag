@@ -400,18 +400,25 @@ class FakeGateway:
         sorting: tuple[str, bool] | None = None,
         page_offset: int | None = None,
         page_limit: int | None = None,
+        with_count: bool = False,
     ) -> ViewPage:
+        """Пагинация как в Тессе: page_offset — номер первой строки окна, а не номер страницы."""
         self.view_calls.append((alias, page_offset, list(parameters)))
         if alias not in self.views:
             raise GatewayError(f"представление «{alias}»: не найдено (фейк)")
         columns = self.views[alias].columns
-        rows = self.view_data[alias]
+        all_rows = self.view_data[alias]
+        rows = all_rows
         if page_limit is not None and self.view_paging.get(alias, True):
-            start = ((page_offset or 1) - 1) * page_limit
-            rows = rows[start : start + page_limit]
+            start = max((page_offset or 1) - 1, 0)
+            rows = all_rows[start : start + page_limit]
         elif page_limit is not None:
-            rows = rows[:page_limit]
-        return ViewPage(columns=list(columns), rows=[dict(row) for row in rows], row_count=len(rows))
+            rows = all_rows[:page_limit]
+        return ViewPage(
+            columns=list(columns),
+            rows=[dict(row) for row in rows],
+            row_count=len(all_rows) if with_count else 0,
+        )
 
     def close(self) -> None:
         self.closed = True

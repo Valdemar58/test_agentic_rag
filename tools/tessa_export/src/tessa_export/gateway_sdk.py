@@ -180,6 +180,7 @@ class SdkGateway:
         sorting: tuple[str, bool] | None = None,
         page_offset: int | None = None,
         page_limit: int | None = None,
+        with_count: bool = False,
     ) -> ViewPage:
         sorting_columns = (
             [self._sorting_column_cls(alias=sorting[0], descending=sorting[1])] if sorting else []
@@ -190,6 +191,7 @@ class SdkGateway:
                     alias,
                     [self._view_parameter(item) for item in parameters],
                     subset_name=subset,
+                    calculate_row_counting=with_count,
                     sorting_columns=sorting_columns,
                     page_offset=page_offset,
                     page_limit=page_limit,

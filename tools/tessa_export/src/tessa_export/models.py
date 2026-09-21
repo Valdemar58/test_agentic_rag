@@ -124,6 +124,7 @@ class ViewPage:
     columns: list[str]
     rows: list[dict[str, Any]]
     row_count: int = 0
+    """Всего строк в представлении; заполняется, только если запрошен подсчёт (with_count)."""
 
 
 class TessaGateway(Protocol):
@@ -152,7 +153,11 @@ class ViewSource(Protocol):
         sorting: tuple[str, bool] | None = None,
         page_offset: int | None = None,
         page_limit: int | None = None,
-    ) -> ViewPage: ...
+        with_count: bool = False,
+    ) -> ViewPage:
+        """`page_offset` — номер первой строки окна (Тесса считает смещение в строках, не в
+        страницах). `with_count` запрашивает общее число строк представления в `row_count`."""
+        ...
 
 
 class TessaViewGateway(TessaGateway, ViewSource, Protocol):

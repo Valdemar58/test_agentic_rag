@@ -80,10 +80,15 @@ def test_collect_orders_deduplicates_view_without_paging() -> None:
 
 
 def test_collect_orders_reads_all_pages_and_respects_max_documents() -> None:
+    """Смещение считается в строках: окно второй страницы начинается со строки page_limit + 1."""
     rows = [_row(str(number)) for number in range(1, 8)]
-    listing = collect_orders(_gateway(rows), _settings(page_limit=2))
+    gateway = _gateway(rows)
+    listing = collect_orders(gateway, _settings(page_limit=2))
     assert len(listing.rows) == 7
     assert listing.pages == 4
+    assert [offset for _, offset, _ in gateway.view_calls] == [1, 3, 5, 7]
+    assert listing.duplicates == 0
+    assert listing.reported_total == 7 and not listing.incomplete
 
     limited = collect_orders(_gateway(rows), _settings(page_limit=2, max_documents=3))
     assert len(limited.rows) == 3
@@ -92,6 +97,17 @@ def test_collect_orders_reads_all_pages_and_respects_max_documents() -> None:
     pages_capped = collect_orders(_gateway(rows), _settings(page_limit=2, max_pages=2))
     assert len(pages_capped.rows) == 4
     assert pages_capped.truncated
+
+
+def test_collect_orders_warns_when_the_view_reports_more_rows() -> None:
+    """Предохранитель обрезал чтение — в сводке видно, сколько строк осталось непрочитанными."""
+    rows = [_row(str(number)) for number in range(1, 20)]
+    listing = collect_orders(_gateway(rows), _settings(page_limit=2, max_pages=3))
+
+    assert listing.reported_total == 19
+    assert listing.unique == 6
+    assert listing.incomplete
+    assert "представление сообщает 19 строк, прочитано 6" in "\n".join(listing.summary_lines())
 
 
 def test_collect_orders_passes_filters_and_paging_to_view() -> None:

@@ -167,12 +167,16 @@ def test_views_listing_and_paged_rows(gateway: SdkGateway, tessa: respx.MockRout
         sorting=("DocDate", True),
         page_offset=2,
         page_limit=50,
+        with_count=True,
     )
     assert page.columns == ["DocID", "StateID"]
     assert page.rows == [{"DocID": doc_id, "StateID": 6}]
 
+    assert page.row_count == 1  # запрошен подсчёт строк: сверяем полноту чтения представления
+
     body = json.loads(tessa["get_data"].calls.last.request.content)
     assert body["ViewAlias"] == "Orders"
+    assert body["CalculateRowCounting"] is True
     assert body["SortingColumns"] == [{"Alias": "DocDate", "Descending": True}]
     names = {item["Name"]: item for item in body["Parameters"]}
     assert names["DocType"]["CriteriaValues"][0]["CriteriaName"] == "Equality"

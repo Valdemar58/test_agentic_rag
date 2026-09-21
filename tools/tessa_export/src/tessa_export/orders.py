@@ -54,19 +54,27 @@ class OrdersListing:
     rows: list[OrderRow] = field(default_factory=list)
     pages: int = 0
     received: int = 0
+    unique: int = 0
     duplicates: int = 0
     without_id: int = 0
     excluded_by_state: int = 0
     excluded_by_match: int = 0
     truncated: bool = False
+    reported_total: int | None = None
 
     @property
     def card_ids(self) -> list[UUID]:
         return [row.card_id for row in self.rows]
 
+    @property
+    def incomplete(self) -> bool:
+        """Тесса сообщила больше строк, чем мы прочитали: список неполный."""
+        return self.reported_total is not None and self.unique < self.reported_total
+
     def summary_lines(self) -> list[str]:
+        total = f" из {self.reported_total} по данным Тессы" if self.reported_total else ""
         lines = [
-            f"Представление: строк получено {self.received} за {self.pages} стр., "
+            f"Представление: прочитано строк {self.unique}{total} за {self.pages} стр., "
             f"к выгрузке отобрано {len(self.rows)}"
         ]
         details = []
@@ -80,7 +88,12 @@ class OrdersListing:
             details.append(f"без ID документа {self.without_id}")
         if details:
             lines.append("  отсеяно: " + ", ".join(details))
-        if self.truncated:
+        if self.incomplete:
+            lines.append(
+                f"  ВНИМАНИЕ: представление сообщает {self.reported_total} строк, прочитано "
+                f"{self.unique} — список неполный. Поднимите orders.max_pages/max_documents"
+            )
+        elif self.truncated:
             lines.append("  ВНИМАНИЕ: сработал предохранитель max_documents/max_pages, список неполный")
         return lines
 
@@ -143,16 +156,21 @@ def collect_orders(source: ViewSource, settings: OrdersSettings) -> OrdersListin
     seen: set[UUID] = set()
     sorting = (settings.sort_column, settings.sort_descending) if settings.sort_column else None
     for page in range(1, settings.max_pages + 1):
+        # PageOffset у Тессы — номер первой строки окна, а не номер страницы: с page_offset=2
+        # возвращаются строки 2…201, то есть окно сдвигается на одну строку (проверено на живом
+        # представлении заказчика 2026-09-21). Смещение считается в строках.
         result = source.view_page(
             settings.view_alias,
             settings.parameters,
             subset=settings.subset,
             sorting=sorting,
-            page_offset=page,
+            page_offset=(page - 1) * settings.page_limit + 1,
             page_limit=settings.page_limit,
+            with_count=page == 1,
         )
         if page == 1:
             _require_columns(result.columns, settings)
+            listing.reported_total = result.row_count or None
         if not result.rows:
             break
         listing.pages = page
@@ -178,12 +196,14 @@ def collect_orders(source: ViewSource, settings: OrdersSettings) -> OrdersListin
             listing.rows.append(
                 OrderRow(card_id=card_id, state_id=state_id, label=_label(row, result.columns, settings))
             )
+        listing.unique = len(seen)
         logger.info(
-            "Представление «%s», страница %d: строк %d, новых %d, отобрано всего %d",
+            "Представление «%s», страница %d: строк %d, новых %d, прочитано всего %d, отобрано %d",
             settings.view_alias,
             page,
             len(result.rows),
             fresh,
+            listing.unique,
             len(listing.rows),
         )
         if len(listing.rows) >= settings.max_documents:
@@ -195,6 +215,7 @@ def collect_orders(source: ViewSource, settings: OrdersSettings) -> OrdersListin
             break
     else:
         listing.truncated = True
+    listing.unique = len(seen)
     return listing
 
 
