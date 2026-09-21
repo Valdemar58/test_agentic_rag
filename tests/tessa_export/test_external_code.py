@@ -73,3 +73,46 @@ def test_installed_package_covers_a_wrong_path(tmp_path: Path, monkeypatch: pyte
     )
 
     assert str(sdk / "src") in sys.path
+
+
+def test_env_variables_are_used_when_config_has_no_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Те же TESSA_SDK_PATH и CARD_SERVICE_PATH, что читает остальной проект (в том числе из .env)."""
+    monkeypatch.setattr(external, "package_installed", lambda package: False)
+    sdk = _repo(tmp_path / "tessa_sdk", "tessa_client")
+    service = _repo(tmp_path / "robot_skills", "robot_skills")
+    monkeypatch.setenv(external.SDK_PATH_ENV, str(sdk))
+    monkeypatch.setenv(external.CARD_SERVICE_PATH_ENV, str(service))
+
+    external.attach_external_code(ExternalCodeSettings())
+
+    assert str(sdk / "src") in sys.path
+    assert str(service / "src") in sys.path
+
+
+def test_env_variable_covers_a_stale_path_from_the_docker_example(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Случай заказчика: в конфиге остался путь контейнера, верный каталог указан в .env."""
+    monkeypatch.setattr(external, "package_installed", lambda package: package == "tessa_client")
+    service = _repo(tmp_path / "robot_skills", "robot_skills")
+    monkeypatch.setenv(external.CARD_SERVICE_PATH_ENV, str(service))
+
+    external.attach_external_code(ExternalCodeSettings(card_service_path=Path("/opt/external/robot_skills")))
+
+    assert str(service / "src") in sys.path
+
+
+def test_error_names_config_env_and_package(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(external, "package_installed", lambda package: False)
+    monkeypatch.delenv(external.SDK_PATH_ENV, raising=False)
+    monkeypatch.delenv(external.CARD_SERVICE_PATH_ENV, raising=False)
+
+    with pytest.raises(external.ExternalCodeError) as exc_info:
+        external.attach_external_code(ExternalCodeSettings())
+
+    message = str(exc_info.value)
+    assert "external.tessa_sdk_path" in message
+    assert external.SDK_PATH_ENV in message
+    assert "не установлен в окружение" in message
