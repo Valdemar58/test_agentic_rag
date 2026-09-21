@@ -18,6 +18,9 @@
 (`tessa-export views --config …` покажет, какое представление подходит), в окружении —
 `TESSA_USERNAME` и `TESSA_PASSWORD`.
 
+Проверки §8.3 (код 3 экспорта) инжест не останавливают: они оценивают качество корпуса, а не
+пригодность архива к индексации — ошибки отдельных файлов инжест фиксирует сам.
+
 Код выхода: 0 — успех; 1 — шаг завершился с ошибкой или частично; 2 — конфиг, окружение, стенд.
 """
 
@@ -33,11 +36,19 @@ from tessa_export.storage import EXPORT_DIR_NAME, MANIFEST_NAME
 EXIT_OK = 0
 EXIT_ISSUES = 1
 EXIT_CONFIG = 2
+# Код 3 экспорта: архив собран, но проверки §8.3 дали FAIL. Это критерии качества голден-корпуса
+# (состав видов, доля сканов, открылись ли все файлы), а не пригодность архива к индексации:
+# инжест всё равно разбирает файлы по одному и сам сообщает о каждой ошибке.
+EXIT_EXPORT_INVALID_SET = 3
 
 NO_EXPORT_CONFIG = (
     "не найден конфиг экспорт-скрипта: {path}\n"
     "Скопируйте tools/tessa_export/config.example.yaml в этот файл, укажите tessa.base_url,"
     " пути SDK и сервиса карточек и заполните секцию orders"
+)
+INVALID_SET_NOTE = (
+    "Проверки §8.3 дали FAIL (подробности в validation_report.md) — это про качество корпуса,"
+    " а не про пригодность к индексации. Продолжаю инжест."
 )
 
 
@@ -101,7 +112,9 @@ def main(argv: list[str] | None = None) -> int:
             print(f"ОШИБКА КОНФИГУРАЦИИ: {NO_EXPORT_CONFIG.format(path=export_config)}")
             return EXIT_CONFIG
         code = _export(export_config, corpus_root, args)
-        if code != EXIT_OK:
+        if code == EXIT_EXPORT_INVALID_SET:
+            print(f"\n{INVALID_SET_NOTE}")
+        elif code != EXIT_OK:
             print("\nВыгрузка не завершилась успешно — инжест не запускается.")
             return code
     if args.dry_run or args.export_only:

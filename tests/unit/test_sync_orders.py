@@ -105,3 +105,24 @@ def test_ingest_only_skips_export(tmp_path: Path, steps: dict[str, list[Any]]) -
     assert code == 0
     assert steps["export"] == []
     assert steps["ingest"] == [(corpus, True, False)]
+
+
+def test_failed_checks_of_the_set_do_not_stop_the_ingest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Код 3 экспорта — «сет не прошёл §8.3», архив при этом собран и индексируется."""
+    corpus = _corpus(tmp_path / "orders")
+    started: list[Path] = []
+
+    def ingest(corpus_root: Path, args: Any) -> int:
+        started.append(corpus_root)
+        return 0
+
+    monkeypatch.setattr(sync_orders, "_export", lambda *_: sync_orders.EXIT_EXPORT_INVALID_SET)
+    monkeypatch.setattr(sync_orders, "_ingest", ingest)
+
+    code = sync_orders.main(["--export-config", str(_export_config(tmp_path)), "--corpus", str(corpus)])
+
+    assert code == 0
+    assert started == [corpus]
+    assert "Продолжаю инжест" in capsys.readouterr().out
