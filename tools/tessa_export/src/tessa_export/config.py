@@ -2,6 +2,10 @@
 
 Все параметры обхода, форматов, правил исключения и ориентиров покрытия задаются здесь;
 значения по умолчанию соответствуют разделу 8 ТЗ и решениям заказчика.
+
+Учётные данные в конфиг не пишутся. Источников два: переменные окружения процесса (так работает
+Docker: `docker run -e TESSA_USERNAME=…`) и файл `.env` рядом с конфигом или в каталоге запуска —
+тот же файл, из которого берёт настройки остальной проект. Переменная процесса важнее файла.
 """
 
 from __future__ import annotations
@@ -20,9 +24,58 @@ Direction = Literal["outgoing", "incoming"]
 # Статус «Отмененный» в справочнике статусов заказчика (ответ заказчика, 2026-09-14)
 CANCELLED_STATUS_ID = UUID("de9d3b6d-532b-4cb8-aa7b-e055e8986e48")
 
+ENV_FILE_NAME = ".env"
+
 
 class ConfigError(ValueError):
     """Ошибка конфигурации с понятным для заказчика сообщением."""
+
+
+def parse_env_file(text: str) -> dict[str, str]:
+    """Разбор `.env`: строки `KEY=VALUE`, комментарии и пустые строки пропускаются.
+
+    Понимает префикс `export`, кавычки вокруг значения и знак `=` внутри значения (пароли).
+    """
+    values: dict[str, str] = {}
+    for line in text.splitlines():
+        item = line.strip()
+        if not item or item.startswith("#"):
+            continue
+        if item.startswith("export "):
+            item = item.removeprefix("export ").lstrip()
+        name, separator, value = item.partition("=")
+        name = name.strip()
+        if not separator or not name:
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        values[name] = value
+    return values
+
+
+def apply_env_files(*directories: Path) -> list[Path]:
+    """Подхватывает `.env` из указанных каталогов в окружение процесса.
+
+    Непустая переменная процесса важнее файла, первый файл важнее следующих: так поведение
+    в Docker (`-e`) не меняется. Возвращает применённые файлы — для лога.
+    """
+    applied: list[Path] = []
+    seen: set[Path] = set()
+    for directory in directories:
+        path = (directory / ENV_FILE_NAME).resolve()
+        if path in seen or not path.is_file():
+            continue
+        seen.add(path)
+        try:
+            values = parse_env_file(path.read_text(encoding="utf-8"))
+        except OSError:
+            continue
+        for name, value in values.items():
+            if not os.environ.get(name):
+                os.environ[name] = value
+        applied.append(path)
+    return applied
 
 
 class StrictModel(BaseModel):
@@ -301,8 +354,9 @@ class ExportConfig(StrictModel):
         password = os.environ.get(self.tessa.password_env, "")
         if not username or not password:
             raise ConfigError(
-                "не заданы учётные данные Тессы: установите переменные окружения "
-                f"{self.tessa.username_env} и {self.tessa.password_env}"
+                "не заданы учётные данные Тессы: задайте переменные "
+                f"{self.tessa.username_env} и {self.tessa.password_env} — в окружении процесса "
+                f"или в файле {ENV_FILE_NAME} рядом с конфигом либо в каталоге запуска"
             )
         return username, password
 

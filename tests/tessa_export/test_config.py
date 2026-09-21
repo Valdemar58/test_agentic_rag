@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from uuid import UUID
 
@@ -12,8 +13,10 @@ from tessa_export.config import (
     ConfigError,
     ExcludeRule,
     ExportConfig,
+    apply_env_files,
     load_config,
     load_seed,
+    parse_env_file,
 )
 
 TOOL_DIR = Path(__file__).resolve().parents[2] / "tools" / "tessa_export"
@@ -160,3 +163,61 @@ def test_extensions_are_normalized() -> None:
         }
     )
     assert config.files.allowed_extensions == ["pdf", "docx"]
+
+
+def test_parse_env_file_handles_comments_quotes_and_equals() -> None:
+    values = parse_env_file(
+        "\n".join(
+            [
+                "# комментарий",
+                "",
+                "TESSA_USERNAME=DOMAIN\\user",
+                "export TESSA_PASSWORD='p=a s#s'",
+                'QUOTED="в кавычках"',
+                "  SPACED = хвост  ",
+                "без_знака_равенства",
+                "=без_имени",
+            ]
+        )
+    )
+    assert values == {
+        "TESSA_USERNAME": "DOMAIN\\user",
+        "TESSA_PASSWORD": "p=a s#s",
+        "QUOTED": "в кавычках",
+        "SPACED": "хвост",
+    }
+
+
+def test_apply_env_files_fills_only_missing_variables(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(os, "environ", dict(os.environ))
+    first, second = tmp_path / "cwd", tmp_path / "config"
+    first.mkdir()
+    second.mkdir()
+    (first / ".env").write_text("TESSA_USERNAME=из-каталога-запуска\nONLY_FIRST=1\n", encoding="utf-8")
+    (second / ".env").write_text(
+        "TESSA_USERNAME=рядом-с-конфигом\nTESSA_PASSWORD=секрет\n", encoding="utf-8"
+    )
+    os.environ["TESSA_USERNAME"] = "из-процесса"
+
+    applied = apply_env_files(first, second, tmp_path / "нет-такого")
+
+    # переменная процесса важнее файла, первый файл важнее второго
+    assert os.environ["TESSA_USERNAME"] == "из-процесса"
+    assert os.environ["TESSA_PASSWORD"] == "секрет"
+    assert os.environ["ONLY_FIRST"] == "1"
+    assert applied == [(first / ".env").resolve(), (second / ".env").resolve()]
+
+
+def test_credentials_are_taken_from_env_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(os, "environ", dict(os.environ))
+    os.environ.pop("TESSA_USERNAME", None)
+    os.environ.pop("TESSA_PASSWORD", None)
+    config = ExportConfig.model_validate({"tessa": {"base_url": "https://tessa.local"}})
+    with pytest.raises(ConfigError, match=r"\.env"):
+        config.resolve_credentials()
+
+    (tmp_path / ".env").write_text("TESSA_USERNAME=DOMAIN\\u\nTESSA_PASSWORD=p\n", encoding="utf-8")
+    apply_env_files(tmp_path)
+    assert config.resolve_credentials() == ("DOMAIN\\u", "p")

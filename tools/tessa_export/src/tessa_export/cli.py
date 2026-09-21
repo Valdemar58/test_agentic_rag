@@ -37,6 +37,7 @@ from tessa_export.config import (
     ConfigError,
     ExportConfig,
     TraversalSettings,
+    apply_env_files,
     load_config,
     load_seed,
 )
@@ -69,6 +70,16 @@ VIEW_VALUE_CHARS = 40
 GatewayFactory = Callable[[ExportConfig, str, str], TessaViewGateway]
 
 logger = logging.getLogger("tessa_export")
+
+
+def _load_env(config_path: str) -> list[Path]:
+    """`.env` в каталоге запуска и рядом с конфигом; переменные процесса важнее (Docker)."""
+    return apply_env_files(Path.cwd(), Path(config_path).resolve().parent)
+
+
+def _log_env_files(paths: list[Path]) -> None:
+    for path in paths:
+        logger.info("Переменные окружения дополнены из %s", path)
 
 
 def _tool_version() -> str:
@@ -174,6 +185,7 @@ def _run_and_report(
 def command_run(args: argparse.Namespace, gateway_factory: GatewayFactory) -> int:
     try:
         config = load_config(Path(args.config))
+        env_files = _load_env(args.config)
         if args.output:
             config.output_dir = Path(args.output)
         seed = load_seed(config.seed_file)
@@ -183,6 +195,7 @@ def command_run(args: argparse.Namespace, gateway_factory: GatewayFactory) -> in
         return EXIT_CONFIG
     log_path = setup_logging(config.output_dir, config.log_level)
     logger.info("tessa-export %s, конфиг %s, лог %s", _tool_version(), args.config, log_path)
+    _log_env_files(env_files)
     try:
         gateway = gateway_factory(config, username, password)
     except ExternalCodeError as exc:
@@ -238,6 +251,7 @@ def command_orders(args: argparse.Namespace, gateway_factory: GatewayFactory) ->
     """Синхронизация приказов: перечень из представления → экспорт только новых карточек."""
     try:
         config = load_config(Path(args.config))
+        env_files = _load_env(args.config)
         if args.output:
             config.output_dir = Path(args.output)
         if args.limit:
@@ -250,6 +264,7 @@ def command_orders(args: argparse.Namespace, gateway_factory: GatewayFactory) ->
     logger.info(
         "tessa-export %s: синхронизация приказов, конфиг %s, лог %s", _tool_version(), args.config, log_path
     )
+    _log_env_files(env_files)
     try:
         gateway = gateway_factory(config, username, password)
     except ExternalCodeError as exc:
@@ -343,11 +358,13 @@ def command_views(args: argparse.Namespace, gateway_factory: GatewayFactory) -> 
     """Разведка представлений на машине заказчика: из какого брать перечень приказов."""
     try:
         config = load_config(Path(args.config))
+        env_files = _load_env(args.config)
         username, password = config.resolve_credentials()
     except ConfigError as exc:
         print(f"ОШИБКА КОНФИГУРАЦИИ: {exc}")
         return EXIT_CONFIG
     setup_logging(config.output_dir, config.log_level)
+    _log_env_files(env_files)
     try:
         gateway = gateway_factory(config, username, password)
     except ExternalCodeError as exc:

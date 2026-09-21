@@ -68,7 +68,9 @@ tessa-export self-test                      # проверка контейне�
 
 Инструкция для заказчика (docker load / docker run, настройки, коды выхода) —
 `tools/tessa_export/README.md`; шаблон конфига — `tools/tessa_export/config.example.yaml`.
-Учётные данные только из окружения: `TESSA_USERNAME`, `TESSA_PASSWORD`.
+Учётные данные в конфиг не пишутся: `TESSA_USERNAME` и `TESSA_PASSWORD` берутся из переменных
+окружения процесса (в Docker — `docker run -e …`) или из `.env` в каталоге запуска либо рядом с
+конфигом; переменная процесса важнее файла.
 
 Результат распаковывается в `data/<архив>/` (каталог `export/` с `cards`, `cards_raw`, `files`,
 `manifest.json`, `links_graph.json`) и подаётся инжесту как `--corpus`.
