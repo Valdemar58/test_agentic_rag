@@ -218,9 +218,10 @@ def state_rules(settings: OrdersSettings) -> list[ExcludeRule]:
     """
     rules: list[ExcludeRule] = []
     if settings.include_state_ids:
+        allowed = _state_names(settings.include_state_ids)
         rules.append(
             ExcludeRule(
-                reason=f"состояние маршрута не из списка выгрузки: {_state_names(settings.include_state_ids)}",
+                reason=f"состояние маршрута не из списка выгрузки: {allowed}",
                 field=STATE_SECTION_FIELD,
                 values=[str(state) for state in settings.include_state_ids],
                 values_mode="none_of",

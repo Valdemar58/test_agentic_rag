@@ -83,7 +83,9 @@ def resolve_external_paths(paths: ExternalPaths | None = None) -> ExternalPathsS
         if package_installed(package):
             installed.append(package)
             continue
-        where = f"{env_name} не задан" if root is None else f"{env_name}={root}: нет {source_dir / package}"
+        where = (
+            f"{env_name} не задан" if source_dir is None else f"{env_name}={root}: нет {source_dir / package}"
+        )
         problems.append(f"{where}, и пакет {package} не установлен в окружение")
     if problems:
         reason = "внешний код недоступен: " + "; ".join(problems)

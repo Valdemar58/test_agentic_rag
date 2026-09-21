@@ -184,8 +184,7 @@ def test_orders_without_view_alias_is_a_config_error(
     )
     gateway = _gateway([], [])
     assert (
-        cli.main(["orders", "--config", str(config)], gateway_factory=lambda *_: gateway)
-        == cli.EXIT_CONFIG
+        cli.main(["orders", "--config", str(config)], gateway_factory=lambda *_: gateway) == cli.EXIT_CONFIG
     )
     assert "orders.view_alias" in capsys.readouterr().out
     assert gateway.closed

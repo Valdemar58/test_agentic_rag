@@ -124,8 +124,11 @@ def test_external_code_error(
 ) -> None:
     monkeypatch.setenv("TESSA_USERNAME", "u")
     monkeypatch.setenv("TESSA_PASSWORD", "p")
-    # ни пути в конфиге, ни установленного пакета: другие тесты сессии могли добавить SDK в sys.path
+    # ни рабочего пути, ни установленного пакета: другие тесты сессии могли добавить SDK в sys.path,
+    # а .env репозитория — заполнить переменные с настоящими каталогами
     monkeypatch.setattr(external, "package_installed", lambda package: False)
+    monkeypatch.setenv(external.SDK_PATH_ENV, str(tmp_path / "нет-такого"))
+    monkeypatch.setenv(external.CARD_SERVICE_PATH_ENV, str(tmp_path / "нет-такого"))
     config_path = _write_config(tmp_path)
     code = cli.main(["run", "--config", str(config_path)])  # реальный шлюз, путей к SDK нет
     assert code == cli.EXIT_CONFIG

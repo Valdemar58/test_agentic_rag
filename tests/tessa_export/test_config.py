@@ -196,9 +196,7 @@ def test_apply_env_files_fills_only_missing_variables(
     first.mkdir()
     second.mkdir()
     (first / ".env").write_text("TESSA_USERNAME=из-каталога-запуска\nONLY_FIRST=1\n", encoding="utf-8")
-    (second / ".env").write_text(
-        "TESSA_USERNAME=рядом-с-конфигом\nTESSA_PASSWORD=секрет\n", encoding="utf-8"
-    )
+    (second / ".env").write_text("TESSA_USERNAME=рядом-с-конфигом\nTESSA_PASSWORD=секрет\n", encoding="utf-8")
     os.environ["TESSA_USERNAME"] = "из-процесса"
 
     applied = apply_env_files(first, second, tmp_path / "нет-такого")

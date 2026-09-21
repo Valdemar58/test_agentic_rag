@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from collections.abc import Iterator
 from pathlib import Path
@@ -13,7 +14,11 @@ from tessa_export.config import ExternalCodeSettings
 
 
 @pytest.fixture(autouse=True)
-def _restore_sys_path() -> Iterator[None]:
+def _isolated_environment(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Свои sys.path и окружение: CLI-тесты подхватывают .env репозитория в os.environ."""
+    monkeypatch.setattr(os, "environ", dict(os.environ))
+    monkeypatch.delenv(external.SDK_PATH_ENV, raising=False)
+    monkeypatch.delenv(external.CARD_SERVICE_PATH_ENV, raising=False)
     saved = list(sys.path)
     yield
     sys.path[:] = saved
@@ -30,9 +35,7 @@ def test_paths_are_added_to_sys_path(tmp_path: Path) -> None:
     sdk = _repo(tmp_path / "tessa_sdk", "tessa_client")
     service = _repo(tmp_path / "robot_skills", "robot_skills")
 
-    external.attach_external_code(
-        ExternalCodeSettings(tessa_sdk_path=sdk, card_service_path=service)
-    )
+    external.attach_external_code(ExternalCodeSettings(tessa_sdk_path=sdk, card_service_path=service))
 
     assert str(sdk / "src") in sys.path
     assert str(service / "src") in sys.path
