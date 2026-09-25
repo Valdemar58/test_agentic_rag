@@ -30,4 +30,10 @@ async def build_runner(config: AppConfig, settings: Settings) -> AgentRunner:
     transport = McpTransport(settings.resolve_mcp_url(config), timeout_s=config.agent.tool_timeout_s)
     tools = AgentTools(transport)
     await tools.load()
-    return AgentRunner(config, tools, RoleLlms(config, settings), tracing=tracing)
+    return AgentRunner(
+        config,
+        tools,
+        RoleLlms(config, settings),
+        tracing=tracing,
+        card_url_base=settings.tessa_card_url_base,
+    )

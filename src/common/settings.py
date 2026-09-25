@@ -33,6 +33,11 @@ class Settings(BaseSettings):
     card_service_password: SecretStr = Field(
         default=SecretStr(""), description="HTTP Basic к реальному сервису"
     )
+    tessa_card_url_base: str = Field(
+        default="",
+        description="База ссылки на карточку в СЭД (как TESSA_CARD_URL_BASE в asu_toir): к ней "
+        "добавляется ID документа, и ссылка появляется в блоке «Источники». Пусто — ссылок нет",
+    )
 
     app_db_host: str = Field(default=LOCALHOST, description="Хост прикладной PostgreSQL")
     app_db_port: int = Field(default=5432, ge=1, le=65535)

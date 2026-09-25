@@ -5,8 +5,10 @@ from __future__ import annotations
 from agent.citations import (
     CARD_SOURCE,
     KNOWN_DOCUMENT_SOURCE,
+    SED_LINK_TITLE,
     SOURCES_TITLE,
     cite_answer,
+    document_url,
     strip_model_sources,
 )
 from agent.evidence import EvidenceRegistry
@@ -114,3 +116,28 @@ def test_strip_model_links_block_only_when_it_is_a_list_of_markers() -> None:
     assert strip_model_sources(kept) == kept
     prose = "Ответ.\nСсылки:\nсм. раздел 6 [S1]"
     assert strip_model_sources(prose) == prose, "после заголовка проза — блок не трогаем"
+
+
+def test_sources_carry_a_link_to_the_sed_card() -> None:
+    """Ссылка на карточку = база из окружения + ID документа (он же ID карточки Тессы)."""
+    cited = cite_answer("Ответ [S1] и карточка [D1].", _registry(), card_url_base="https://sed.example/card/")
+
+    urls = {source.doc_id: source.url for source in cited.sources}
+    assert urls == {"doc-144": "https://sed.example/card/doc-144"}
+    assert f"[{SED_LINK_TITLE}](https://sed.example/card/doc-144)" in cited.sources_block
+    # ссылка есть и у фрагмента, и у карточки одного документа
+    assert cited.sources_block.count(SED_LINK_TITLE) == len(cited.sources)
+
+
+def test_sources_have_no_link_without_the_base() -> None:
+    cited = cite_answer("Ответ [S1].", _registry())
+
+    assert cited.sources[0].url is None
+    assert SED_LINK_TITLE not in cited.sources_block
+
+
+def test_document_url_handles_trailing_slash_and_empty_values() -> None:
+    assert document_url("https://sed.example/card", "abc") == "https://sed.example/card/abc"
+    assert document_url("https://sed.example/card/", "abc") == "https://sed.example/card/abc"
+    assert document_url("  ", "abc") is None
+    assert document_url("https://sed.example/card/", "") is None

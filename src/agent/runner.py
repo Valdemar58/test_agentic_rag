@@ -227,12 +227,14 @@ class AgentRunner:
         *,
         tracing: Tracing | None = None,
         today: Callable[[], dt.date] = dt.date.today,
+        card_url_base: str = "",
     ) -> None:
         self._config = config
         self._tools = tools
         self._llms = llms
         self._tracing: Tracing = tracing or NoopTracing()
         self._today = today
+        self._card_url_base = card_url_base
 
     @property
     def tracing(self) -> Tracing:
@@ -425,7 +427,7 @@ class AgentRunner:
             yield AnswerRestarted(problems=verification.problems)
         answer_seconds = time.perf_counter() - answer_started - verify_seconds
         # FR-4: маркеры [S#]/[D#] → нумерованные ссылки и блок «Источники» по реестру (6.5)
-        cited = cite_answer(text, session.registry)
+        cited = cite_answer(text, session.registry, card_url_base=self._card_url_base)
         body = cited.body
         if run.exhausted and BUDGET_CAVEAT not in body:
             body = f"{body}\n\n{BUDGET_CAVEAT}".strip()

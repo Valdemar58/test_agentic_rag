@@ -19,6 +19,7 @@ from agent.evidence import ALIAS_RE, DOC_PREFIX, EvidenceRegistry, Fragment, Kno
 SOURCES_TITLE = "Источники"
 CARD_SOURCE = "карточка документа"
 KNOWN_DOCUMENT_SOURCE = "документ СЭД (карточка не запрашивалась)"
+SED_LINK_TITLE = "открыть в СЭД"
 # группа ссылок в скобках: [S1], [S1][S4], [S1, D2], [ S3; S4 ]
 MARKER_GROUP_RE = re.compile(r"\[\s*((?:[DS]\d+)(?:\s*[,;/ ]\s*[DS]\d+)*)\s*\]")
 ALIAS_IN_GROUP_RE = re.compile(r"[DS]\d+")
@@ -46,16 +47,20 @@ class Source(BaseModel):
     page_no: int | None = None
     text: str | None = Field(description="Текст фрагмента или сводка карточки — для показа по клику")
     context: str | None = Field(default=None, description="Текст раздела-родителя фрагмента, если есть")
+    url: str | None = Field(
+        default=None, description="Ссылка на карточку документа в СЭД; пусто, если база URL не задана"
+    )
 
     def line(self) -> str:
-        """Строка блока «Источники» (FR-4: название/номер, дата, раздел/пункт)."""
+        """Строка блока «Источники» (FR-4: название/номер, дата, раздел/пункт) и ссылка на СЭД."""
         status = f" ({self.doc_status})" if self.doc_status else ""
+        link = f" — [{SED_LINK_TITLE}]({self.url})" if self.url else ""
         if self.kind == "document":
             origin = CARD_SOURCE if self.text else KNOWN_DOCUMENT_SOURCE
-            return f"[{self.number}] {self.label}{status} — {origin}"
+            return f"[{self.number}] {self.label}{status} — {origin}{link}"
         where = self.breadcrumbs or self.label
         page = f", стр. {self.page_no}" if self.page_no else ""
-        return f"[{self.number}] {where}{status}{page}"
+        return f"[{self.number}] {where}{status}{page}{link}"
 
 
 class CitedAnswer(BaseModel):
@@ -71,7 +76,17 @@ class CitedAnswer(BaseModel):
         return "\n".join([f"{SOURCES_TITLE}:", *(source.line() for source in self.sources)])
 
 
-def _fragment_source(number: int, fragment: Fragment, document: KnownDocument | None) -> Source:
+def document_url(base: str, doc_id: str) -> str | None:
+    """Ссылка на карточку в СЭД: база из окружения плюс идентификатор документа (он же ID карточки)."""
+    base = base.strip()
+    if not base or not doc_id:
+        return None
+    return f"{base.rstrip('/')}/{doc_id}"
+
+
+def _fragment_source(
+    number: int, fragment: Fragment, document: KnownDocument | None, card_url_base: str
+) -> Source:
     return Source(
         number=number,
         alias=fragment.alias,
@@ -86,10 +101,11 @@ def _fragment_source(number: int, fragment: Fragment, document: KnownDocument | 
         page_no=fragment.page_no,
         text=fragment.text,
         context=fragment.context,
+        url=document_url(card_url_base, fragment.doc_id),
     )
 
 
-def _document_source(number: int, document: KnownDocument) -> Source:
+def _document_source(number: int, document: KnownDocument, card_url_base: str) -> Source:
     return Source(
         number=number,
         alias=document.alias,
@@ -100,6 +116,7 @@ def _document_source(number: int, document: KnownDocument) -> Source:
         doc_status=document.status,
         breadcrumbs=None,
         text=document.card_text,
+        url=document_url(card_url_base, document.doc_id),
     )
 
 
@@ -117,7 +134,7 @@ def strip_model_sources(text: str) -> str:
     return text
 
 
-def cite_answer(text: str, registry: EvidenceRegistry) -> CitedAnswer:
+def cite_answer(text: str, registry: EvidenceRegistry, *, card_url_base: str = "") -> CitedAnswer:
     body = strip_model_sources(text.strip())
     sources: list[Source] = []
     numbers: dict[str, int] = {}
@@ -130,11 +147,13 @@ def cite_answer(text: str, registry: EvidenceRegistry) -> CitedAnswer:
         if alias.startswith(DOC_PREFIX):
             document = registry.document_by_alias(alias)
             if document is not None:
-                source = _document_source(len(sources) + 1, document)
+                source = _document_source(len(sources) + 1, document, card_url_base)
         else:
             fragment = registry.fragment_by_alias(alias)
             if fragment is not None:
-                source = _fragment_source(len(sources) + 1, fragment, registry.document(fragment.doc_id))
+                source = _fragment_source(
+                    len(sources) + 1, fragment, registry.document(fragment.doc_id), card_url_base
+                )
         if source is None:
             if alias not in unresolved:
                 unresolved.append(alias)

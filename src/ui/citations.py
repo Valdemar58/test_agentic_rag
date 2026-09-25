@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from agent.citations import Source
+from agent.citations import SED_LINK_TITLE, Source
 
 # Имя сводного элемента не должно встречаться в тексте ответа: иначе Chainlit превратит заголовок
 # блока «Источники» в ссылку-бейдж
@@ -36,6 +36,8 @@ def citation_name(number: int) -> str:
 def citation_content(source: Source) -> str:
     status = f" — {source.doc_status}" if source.doc_status else ""
     lines = [f"**{source.label or DOCUMENT_FALLBACK}**{status}"]
+    if source.url:
+        lines.append(f"[{SED_LINK_TITLE}]({source.url})")
     if source.kind == "document":
         lines.append("")
         if source.text:
