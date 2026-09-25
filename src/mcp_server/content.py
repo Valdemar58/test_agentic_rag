@@ -23,6 +23,10 @@ ROLE_ORDER = {"main": 0, "appendix": 1, "supplement": 2}
 NOT_INDEXED_NOTE = (
     "текст документа отсутствует в индексе (файлы не проиндексированы или документ вне корпуса)"
 )
+OTHER_DOCUMENT_NOTE = (
+    "раздел относится к документу {label} ({doc_id}), а не к запрошенному {requested}: текст приложения "
+    "индексируется вместе с карточкой, к которой приложен файл. Ссылайся на документ, указанный здесь"
+)
 
 
 class ContentNotFoundError(Exception):
@@ -147,12 +151,15 @@ class DocumentReader:
         payload = self._parent_by_id(section_id)
         if payload is None:
             raise ContentNotFoundError(f"раздел {section_id} не найден в индексе")
+        note = None
         if payload.doc_id != doc_id:
-            raise ContentNotFoundError(
-                f"раздел {section_id} принадлежит документу {payload.doc_id}, а не {doc_id}"
-            )
+            # раздел найден, но у другого документа: отказ заставлял агента повторять вызов и тратить
+            # бюджет (живой прогон 2026-09-25 — пять одинаковых ошибок подряд). Отдаём текст и говорим,
+            # какому документу он принадлежит: ссылаться агент должен на него.
+            note = OTHER_DOCUMENT_NOTE.format(label=_label(payload), doc_id=payload.doc_id, requested=doc_id)
+            logger.info("get_document_content: раздел %s отдан из документа %s", section_id, payload.doc_id)
         return DocumentContent(
-            doc_id=doc_id,
+            doc_id=payload.doc_id,
             label=_label(payload),
             doc_kind=payload.doc_kind,
             doc_number=payload.doc_number,
@@ -164,7 +171,7 @@ class DocumentReader:
             offset=0,
             next_offset=None,
             truncated=False,
-            note=None,
+            note=note,
         )
 
     def _parent_by_id(self, section_id: str) -> ChunkPayload | None:

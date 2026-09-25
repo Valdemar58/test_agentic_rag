@@ -32,6 +32,10 @@ REPEATED_CALL = (
     "Этот вызов уже выполнялся с теми же аргументами; повторно инструмент не вызван (бюджет не тратится). "
     "Прежний результат:\n{text}"
 )
+REPEATED_ERROR = (
+    "Этот вызов уже завершился ошибкой с теми же аргументами; повторно инструмент не вызван. "
+    "Повтор не поможет — измени аргументы или используй другой инструмент. Прежняя ошибка:\n{text}"
+)
 CONTEXT_EXHAUSTED = (
     "Контекст для результатов инструментов исчерпан: вызов не выполнен. "
     "Заверши работу — напиши заметки для ответа по уже найденному."
@@ -96,6 +100,11 @@ class ToolRun:
         default_factory=list, metadata={"doc": "Фрагменты из кэша сессии, а не из вызовов этого вопроса"}
     )
     seen: dict[tuple[str, str], str] = field(default_factory=dict, repr=False)
+    failed: dict[tuple[str, str], str] = field(
+        default_factory=dict,
+        repr=False,
+        metadata={"doc": "Ошибки вызовов: повтор с теми же аргументами до инструмента не доходит"},
+    )
 
     @property
     def search_queries(self) -> list[str]:
@@ -259,6 +268,9 @@ class AgentTools:
         if key in run.seen:
             logger.info("Инструмент %s: повторный вызов с теми же аргументами, отдаю прежний результат", name)
             return run.consume_context(REPEATED_CALL.format(text=run.seen[key]))
+        if key in run.failed:
+            logger.info("Инструмент %s: тот же вызов уже дал ошибку, повтор не выполняю", name)
+            return run.consume_context(REPEATED_ERROR.format(text=run.failed[key]))
         query = str(arguments.get("query")) if name == TOOL_SEARCH and arguments.get("query") else None
         started = time.perf_counter()
         try:
@@ -275,6 +287,7 @@ class AgentTools:
                     query=query,
                 )
             )
+            run.failed[key] = str(exc)
             return f"Ошибка инструмента {name}: {exc}"
         seconds = time.perf_counter() - started
         if result.is_error or result.structured is None:
@@ -289,6 +302,7 @@ class AgentTools:
                     query=query,
                 )
             )
+            run.failed[key] = text
             return f"Ошибка инструмента {name}: {text}"
         rendered = render(name, arguments, result.structured, run.registry, run.limits)
         text = run.consume_context(rendered.text)

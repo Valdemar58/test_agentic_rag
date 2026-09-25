@@ -94,6 +94,17 @@ def test_missing_document_and_sections_are_reported(corpus: InMemoryCorpus) -> N
         reader(corpus).read(corpus.docs["order"], section_id="00000000-0000-0000-0000-000000000000")
     with pytest.raises(ContentNotFoundError, match="не найден"):
         reader(corpus).read(corpus.docs["order"], section_id="не-uuid")
-    other = reader(corpus).read(corpus.docs["other"]).sections[0].section_id
-    with pytest.raises(ContentNotFoundError, match="принадлежит документу"):
-        reader(corpus).read(corpus.docs["order"], section_id=other)
+
+
+def test_section_of_another_document_is_served_with_a_note(corpus: InMemoryCorpus) -> None:
+    """Живой прогон 2026-09-25: агент просил раздел приложения у карточки-приложения и пять раз
+    получал отказ. Раздел отдаётся, а пометка называет документ, к которому он относится."""
+    other_doc = corpus.docs["other"]
+    section_id = reader(corpus).read(other_doc).sections[0].section_id
+
+    content = reader(corpus).read(corpus.docs["order"], section_id=section_id)
+
+    assert content.sections[0].section_id == section_id
+    assert content.doc_id == other_doc, "ссылаться нужно на документ раздела, а не на запрошенный"
+    assert content.note is not None
+    assert other_doc in content.note and corpus.docs["order"] in content.note

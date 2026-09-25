@@ -288,6 +288,34 @@ async def test_tool_error_is_returned_as_text_and_refusal_is_detected(harness: H
     assert _tool_messages(harness.llms["tool_loop"])[0].startswith(f"Ошибка инструмента {TOOL_CARD}")
 
 
+async def test_failed_call_is_not_repeated_and_does_not_spend_budget(harness: Harness) -> None:
+    """Живой прогон 2026-09-25: один и тот же неудачный вызов ушёл пять раз и съел бюджет."""
+    missing = "00000000-0000-0000-0000-000000000000"
+    runner = harness.runner(
+        [
+            tool_step(TOOL_CARD, doc_id=missing),
+            tool_step(TOOL_CARD, doc_id=missing),
+            tool_step(TOOL_CARD, doc_id=missing),
+            tool_step(TOOL_SEARCH, query=QUERY),
+            "Заметки: карточки нет, данные из поиска.",
+        ],
+        ["Отчёт сдаётся до пятого числа [S1]."],
+    )
+    answer = await runner.ask("Что с отчётом?", harness.session())
+
+    # инструмент вызван один раз, повторы до него не дошли и бюджет не потратили
+    assert [call.name for call in answer.tool_calls] == [TOOL_CARD, TOOL_SEARCH]
+    assert sum(call.name == TOOL_CARD for call in answer.tool_calls) == 1
+    # _tool_messages сворачивает одинаковые сообщения: оба повтора дали один и тот же текст
+    repeats = [
+        text
+        for text in _tool_messages(harness.llms["tool_loop"])
+        if text.startswith("Этот вызов уже завершился ошибкой")
+    ]
+    assert len(repeats) == 1 and "Повтор не поможет" in repeats[0]
+    assert not answer.budget_exhausted
+
+
 def test_registry_is_shared_across_questions_of_a_session() -> None:
     session = AgentSession(CONFIG)
     assert isinstance(session.registry, EvidenceRegistry)
