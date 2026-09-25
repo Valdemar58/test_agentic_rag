@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import time
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -197,8 +198,11 @@ class HybridSearcher:
         limit = min(top_k or self._retrieval.top_k, self._retrieval.max_top_k)
         limit = max(limit, 1)
         qdrant_filter, applied, notes = self.build_filter(filters)
+        started = time.perf_counter()
         embedding = self._embedder.encode([query])[0]
+        embed_seconds = time.perf_counter() - started
         prefetch_limit = self._retrieval.prefetch_limit
+        started = time.perf_counter()
         points = self._client.query_points(
             self._qdrant.collection,
             prefetch=[
@@ -221,8 +225,11 @@ class HybridSearcher:
             limit=self._retrieval.rerank_candidates,
             with_payload=True,
         ).points
+        qdrant_seconds = time.perf_counter() - started
         candidates = [ChunkPayload.model_validate(point.payload) for point in points if point.payload]
+        started = time.perf_counter()
         scores = self._reranker.score(query, [candidate.text for candidate in candidates])
+        rerank_seconds = time.perf_counter() - started
         ranked = sorted(
             zip(range(1, len(candidates) + 1), candidates, scores, strict=True), key=lambda item: -item[2]
         )[:limit]
@@ -231,7 +238,16 @@ class HybridSearcher:
             _hit(candidate, score, rank, parents.get(candidate.parent_id or ""))
             for rank, candidate, score in ranked
         ]
-        logger.info("hybrid_search «%s»: кандидатов %d, отдано %d", query[:60], len(candidates), len(hits))
+        # тайминги по шагам: без них непонятно, во что упирается медленный поиск (Qdrant или CPU)
+        logger.info(
+            "hybrid_search «%s»: кандидатов %d, отдано %d; эмбеддинг %.1f с, Qdrant %.1f с, rerank %.1f с",
+            query[:60],
+            len(candidates),
+            len(hits),
+            embed_seconds,
+            qdrant_seconds,
+            rerank_seconds,
+        )
         return SearchResult(
             query=query, hits=hits, candidates=len(candidates), applied_filters=applied, notes=notes
         )

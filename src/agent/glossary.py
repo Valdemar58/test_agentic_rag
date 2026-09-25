@@ -32,6 +32,25 @@ class Expansion(BaseModel):
     doc_label: str = Field(default="", description="Документ-источник расшифровки")
 
 
+def keep_abbreviations(question: str, query: str) -> str:
+    """Возвращает аббревиатуры вопроса в переписанный запрос в исходном написании.
+
+    Модель при переписывании портит сокращения: приводит к строчным («ПВТР» → «пвтр»), искажает
+    букву («КОЭ» → «кое») или теряет совсем, и sparse-вектор перестаёт находить документ по точному
+    слову (живой диалог 2026-09-25). Если сокращение есть в другом регистре — восстанавливается
+    написание (совпадение перед дефисом не трогается, чтобы не испортить «кое-что»); если его нет
+    вовсе — дописывается в конец запроса.
+    """
+    result = query
+    for term in dict.fromkeys(ABBREVIATION_RE.findall(question)):
+        if term in result:
+            continue
+        pattern = re.compile(rf"\b{re.escape(term)}\b(?!-)", re.IGNORECASE)
+        fixed, replaced = pattern.subn(term, result)
+        result = fixed if replaced else f"{result} {term}"
+    return result
+
+
 def candidate_terms(question: str, named: Sequence[str], limit: int) -> list[str]:
     """Термины для глоссария: сначала названные моделью, затем прописные сокращения вопроса."""
     terms: list[str] = []

@@ -5,7 +5,9 @@ LLM роли `rewrite` (с размышлениями, N9) получает ис
 списка (вопрос к документам, приветствие, вопрос о возможностях, просьба переформулировать прошлый
 ответ); `relevant_documents` — псевдонимы уже найденных документов, к которым относится вопрос (кэш
 сессии, 6.4); `abbreviations` — аббревиатуры для расшифровки (глоссарий, этап 8). Ответ разбирается
-устойчиво: JSON ищется в тексте, при провале поиск идёт по исходному вопросу.
+устойчиво: JSON ищется в тексте, при провале поиск идёт по исходному вопросу. Аббревиатуры вопроса
+возвращаются в переписанный запрос кодом (`keep_abbreviations`): модель приводит их к строчным или
+теряет, а sparse-вектор ищет по точному слову.
 
 Без поиска обрабатываются только три названных намерения, причём переформулировка — лишь при непустой
 истории: свободного флага «поиск не нужен» у модели нет (живой диалог 2026-09-16: бытовой вопрос «во
@@ -24,6 +26,7 @@ from llama_index.core.llms import LLM, ChatMessage
 from pydantic import BaseModel, Field, ValidationError
 
 from agent.evidence import ALIAS_RE, DOC_PREFIX, KnownDocument
+from agent.glossary import keep_abbreviations
 from agent.llm import thinking_text
 from agent.memory import Turn, render_history
 from agent.prompts import REWRITE_SYSTEM_PROMPT, rewrite_user_message
@@ -96,13 +99,13 @@ def parse_rewrite(
         data = json.loads(match.group(0))
         if not isinstance(data, dict):
             raise TypeError("ожидался объект JSON")
-        query = " ".join(str(data.get("query") or "").split()) or question
+        query = keep_abbreviations(question, " ".join(str(data.get("query") or "").split()) or question)
         documents = [
             item
             for item in _strings(data.get("relevant_documents"))
             if ALIAS_RE.match(item) and item.startswith(DOC_PREFIX)
         ]
-        queries = _strings(data.get("queries"))[:MAX_QUERIES]
+        queries = [keep_abbreviations(question, item) for item in _strings(data.get("queries"))[:MAX_QUERIES]]
         return RewrittenQuery(
             question=question,
             query=query,

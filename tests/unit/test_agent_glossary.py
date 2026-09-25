@@ -7,7 +7,14 @@ from collections.abc import AsyncIterator
 
 import pytest
 
-from agent.glossary import Expansion, candidate_terms, expand_query, first_expansion, short_definition
+from agent.glossary import (
+    Expansion,
+    candidate_terms,
+    expand_query,
+    first_expansion,
+    keep_abbreviations,
+    short_definition,
+)
 from agent.prompts import LOOP_GLOSSARY_TITLE
 from agent.rendering import TOOL_SEARCH
 from agent.runner import AgentRunner, AgentSession, GlossaryUsed, QueryRewritten
@@ -165,3 +172,28 @@ async def test_unknown_term_does_not_change_query(parts: tuple[AgentTools, FakeG
     assert "glossary_used" not in [event.kind for event in events]
     rewritten = next(event for event in events if isinstance(event, QueryRewritten))
     assert rewritten.query == question and glossary.terms == ["СИЗ"]
+
+
+def test_keep_abbreviations_restores_case_lost_by_the_model() -> None:
+    # регистр восстанавливается по слову целиком, каждое сокращение отдельно
+    assert (
+        keep_abbreviations("Отпуск по ПВТР и ЛПУМГ", "правила отпуска по пвтр в лпумг")
+        == "правила отпуска по ПВТР в ЛПУМГ"
+    )
+    # верное написание не трогаем
+    assert keep_abbreviations("Что такое ПВТР", "что такое ПВТР") == "что такое ПВТР"
+    assert keep_abbreviations("без сокращений", "без сокращений") == "без сокращений"
+
+
+def test_keep_abbreviations_appends_a_mangled_or_lost_one() -> None:
+    """Живой диалог 2026-09-25: «КОЭ» переписалось как «кое» — буква искажена, не регистр."""
+    assert (
+        keep_abbreviations("Что такое КОЭ", "что означает аббревиатура кое")
+        == "что означает аббревиатура кое КОЭ"
+    )
+    # модель раскрыла сокращение словами — дописываем его, sparse-вектор ищет по точному слову
+    assert keep_abbreviations("Что такое КОЭ", "комплекс очистки эмульсии") == (
+        "комплекс очистки эмульсии КОЭ"
+    )
+    # «кое-что» не превращается в «КОЭ-что»
+    assert keep_abbreviations("Что такое КОЭ", "кое-что про эмульсию") == "кое-что про эмульсию КОЭ"
