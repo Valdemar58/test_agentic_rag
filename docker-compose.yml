@@ -229,6 +229,8 @@ services:
       UI_USERNAME: ${UI_USERNAME:-admin}
       UI_PASSWORD: ${UI_PASSWORD:-admin}
       CHAINLIT_AUTH_SECRET: ${CHAINLIT_AUTH_SECRET:-dev-chainlit-secret-change-me}
+      # Ссылка на карточку документа в СЭД рядом с каждым источником; пусто — ссылок нет
+      TESSA_CARD_URL_BASE: ${TESSA_CARD_URL_BASE:-}
       OAUTH_GENERIC_NAME: ${OAUTH_GENERIC_NAME:-}
       OAUTH_GENERIC_CLIENT_ID: ${OAUTH_GENERIC_CLIENT_ID:-}
       OAUTH_GENERIC_CLIENT_SECRET: ${OAUTH_GENERIC_CLIENT_SECRET:-}

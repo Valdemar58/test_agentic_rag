@@ -6,8 +6,10 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import pytest
+import yaml
 
 from common.config import DEFAULT_CONFIG_PATH, load_app_config
+from common.settings import Settings
 from common.stack import (
     CommandResult,
     Stack,
@@ -158,3 +160,33 @@ def test_down_covers_all_profiles_and_volumes_flag() -> None:
     assert call.count("--profile") == 4 and call[-1] == "--volumes"
     with pytest.raises(StackError, match="docker compose"):
         Stack(config, runner=FailingRunner(), gpu_total_mib=RTX_5080_MIB).down()
+
+
+def test_agent_ui_container_gets_every_setting_the_agent_reads() -> None:
+    """Настройка из Settings, нужная агенту, обязана попасть в environment контейнера agent-ui.
+
+    `.env` в образ не копируется (`.dockerignore`), поэтому единственный путь переменной внутрь —
+    список в compose. Пропуск не виден в тестах агента: он читает Settings напрямую (живой прогон
+    2026-09-25 — ссылки на СЭД не появлялись, потому что TESSA_CARD_URL_BASE до контейнера не доходил).
+    """
+    compose = yaml.safe_load((DEFAULT_CONFIG_PATH.parent.parent / "docker-compose.yml").read_text("utf-8"))
+    environment = compose["services"]["agent-ui"]["environment"]
+    needed = (
+        "MCP_URL",
+        "LLM_BASE_URL",
+        "APP_DB_HOST",
+        "APP_DB_USER",
+        "APP_DB_PASSWORD",
+        "APP_DB_NAME",
+        "LANGFUSE_ENABLED",
+        "UI_USERNAME",
+        "UI_PASSWORD",
+        "CHAINLIT_AUTH_SECRET",
+        "TESSA_CARD_URL_BASE",
+    )
+    missing = [name for name in needed if name not in environment]
+    assert not missing, f"agent-ui не получает переменные: {', '.join(missing)}"
+    # имена совпадают с полями Settings, иначе значение не будет прочитано;
+    # CHAINLIT_AUTH_SECRET — исключение, его читает сам Chainlit, а не наши настройки
+    own = {name.lower() for name in needed if name != "CHAINLIT_AUTH_SECRET"}
+    assert own <= set(Settings.model_fields)

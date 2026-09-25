@@ -198,6 +198,7 @@ uv run python scripts/sync_orders.py
 | Инжест жалуется на GPU | одновременно подняты профили `runtime` и `ingest`; они взаимоисключены, `stack.py up … --switch` переключает |
 | `could not select device driver "nvidia"` | не установлен NVIDIA Container Toolkit, либо его регистрация пропала из `/etc/docker/daemon.json`. Восстанавливается `nvidia-ctk runtime configure --runtime=docker` (файл дополняется, `data-root` не теряется) |
 | `unable to create new device filters program: load program: invalid argument` | `nvidia-container-cli` не может собрать cgroup-фильтр устройств на этом ядре (проверено на РЕД ОС, cgroup v2, тулкит 1.19.1). Решение — отдавать GPU через CDI, см. ниже |
+| В блоке «Источники» нет ссылок на СЭД | не задан `TESSA_CARD_URL_BASE` в `.env`, либо стенд поднимался до того, как переменную добавили. Значение внутри контейнера: `docker exec agentic-rag-agent-ui-1 env | grep TESSA_CARD_URL_BASE`; пересборка образа не нужна, достаточно `stack.py up runtime` |
 | Логи | выгрузка — `data/orders/tessa_export.log`; инжест — `data/work/reports/`; контейнеры — `uv run python scripts/stack.py compose -- logs -f <сервис>` |
 
 ## GPU через CDI
