@@ -198,6 +198,24 @@ class Applied(NamedTuple):
     emptied: bool
 
 
+def drop_empty_sections(text: str) -> str:
+    """Снимает заголовки, под которыми не осталось содержимого.
+
+    Раздел пустеет двумя путями: проверка вычеркнула из него все предложения либо модель сама
+    написала заголовок и ничего под ним (живой прогон 2026-09-25: «Прямой ответ:» без текста, сразу
+    за ним «Детали:»). Пустой заголовок в ответе выглядит как сбой, поэтому убирается.
+    """
+    lines = [line for line in text.splitlines() if not _EMPTY_LINE_RE.match(line)]
+    kept: list[str] = []
+    for index, line in enumerate(lines):
+        if _HEADING_LINE_RE.match(line):
+            following = next((item for item in lines[index + 1 :] if item.strip()), None)
+            if following is None or _HEADING_LINE_RE.match(following):
+                continue
+        kept.append(line)
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(kept)).strip()
+
+
 def apply_problems(
     draft: str, problems: list[VerifyProblem], *, match_ratio: float, question: str = ""
 ) -> Applied:
@@ -236,10 +254,7 @@ def apply_problems(
         elif kept and "\n" in separator and len(separator) > len(kept[-1][1]):
             kept[-1][1] = separator  # абзацный отступ вычеркнутого предложения переходит к предыдущему
     text = "".join(piece + separator for piece, separator in kept)
-    lines = [line for line in text.splitlines() if not _EMPTY_LINE_RE.match(line)]
-    while lines and _HEADING_LINE_RE.match(lines[-1]):
-        lines.pop()  # заголовок «Детали:», под которым ничего не осталось
-    text = re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+    text = drop_empty_sections(text)
     if not text or (MARKER_RE.search(draft) and not MARKER_RE.search(text)):
         logger.info("Проверка ответа: после вычёркивания текст пуст или без ссылок, оставлен черновик")
         for problem in problems:

@@ -60,7 +60,7 @@ from agent.rendering import (
 from agent.rewrite import QueryRewriter, RewrittenQuery
 from agent.tools import AgentTools, ToolRun
 from agent.tracing import NoopTracing, QuestionHandle, Tracing
-from agent.verify import AnswerVerifier, Verification, VerifyProblem
+from agent.verify import AnswerVerifier, Verification, VerifyProblem, drop_empty_sections
 from common.config import AppConfig, LlmRole
 
 logger = logging.getLogger(__name__)
@@ -393,7 +393,8 @@ class AgentRunner:
                 step.update(output=text, metadata={"thinking": thinking, "attempts": attempts})
             # блок «Ссылки»/«Источники» модели снимается до проверки: иначе после вычёркивания всего
             # черновика строка «Ссылки: [S6]» сходила за текст со ссылкой (живой прогон 2026-09-17)
-            text = strip_model_sources(text.strip())
+            # пустой раздел («Прямой ответ:» без текста) модель пишет и сама — снимаем до проверки
+            text = drop_empty_sections(strip_model_sources(text.strip()))
             if not self._should_verify(rewritten.needs_search, text, run):
                 break
             yield VerifyStarted(attempt=rounds)

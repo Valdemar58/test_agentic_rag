@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 
-from agent.verify import VerifyProblem, apply_problems, computed_times, parse_verification, times_in
+from agent.verify import (
+    VerifyProblem,
+    apply_problems,
+    computed_times,
+    drop_empty_sections,
+    parse_verification,
+    times_in,
+)
 
 DRAFT = (
     "Прямой ответ: вернуться нужно не позднее 13:00 [S3].\n\n"
@@ -155,3 +162,17 @@ def test_partial_sentence_claims_short_neighbours_and_empty_headings() -> None:
         match_ratio=0.6,
     )
     assert not applied.corrected and applied.emptied, "остался бы один заголовок — отклонён весь черновик"
+
+
+def test_drop_empty_sections_removes_a_heading_without_content() -> None:
+    """Живой прогон 2026-09-25: «Прямой ответ:» остался без текста, сразу за ним «Детали:»."""
+    text = "Прямой ответ:\n\nДетали:\n\n- Комитет упомянут в протоколе [S1]."
+    assert drop_empty_sections(text) == "Детали:\n\n- Комитет упомянут в протоколе [S1]."
+
+
+def test_drop_empty_sections_keeps_filled_ones() -> None:
+    text = "Прямой ответ:\nПриходить до 09:00 [S1].\nДетали:\n- Пятница до 16:45 [S2]."
+    assert drop_empty_sections(text) == text
+    # заголовок в конце без содержимого тоже снимается
+    assert drop_empty_sections("Ответ [S1].\nДетали:") == "Ответ [S1]."
+    assert drop_empty_sections("") == ""
