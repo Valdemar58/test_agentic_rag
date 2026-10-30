@@ -202,7 +202,10 @@ def test_runtime_device_cuda_adds_gpu_compose_file() -> None:
     files = [runner.calls[-1][i + 1] for i, item in enumerate(runner.calls[-1]) if item == "-f"]
     assert [Path(file).name for file in files] == ["docker-compose.yml", "docker-compose.gpu.yml"]
     gpu = yaml.safe_load(Path(files[1]).read_text("utf-8"))["services"]["mcp-server"]
-    assert gpu["build"]["args"]["TORCH_INDEX"].endswith("/cu128")
+    # torch из lock, а не с индекса PyTorch: там нет версии lock под Linux (сборка 2026-10-30 упала)
+    assert gpu["build"]["args"]["TORCH_VARIANT"] == "cuda"
+    dockerfile = (DEFAULT_CONFIG_PATH.parent.parent / "docker" / "Dockerfile.app").read_text("utf-8")
+    assert "ARG TORCH_VARIANT=cpu" in dockerfile and "TORCH_INDEX" not in dockerfile
     assert gpu["deploy"]["resources"]["reservations"]["devices"][0]["capabilities"] == ["gpu"]
 
 

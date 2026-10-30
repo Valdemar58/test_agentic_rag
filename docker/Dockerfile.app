@@ -25,14 +25,15 @@ ARG SKIP_PACKAGES="torch torchvision triton cuda-bindings cuda-pathfinder cuda-t
     nvidia-cufft nvidia-cufile nvidia-curand nvidia-cusolver nvidia-cusparse nvidia-cusparselt-cu13 \
     nvidia-nccl-cu13 nvidia-nvjitlink nvidia-nvshmem-cu13 nvidia-nvtx"
 ARG TORCH_CPU="torch==2.14.0 torchvision==0.29.0"
-# Индекс колёс torch: CPU по умолчанию; docker-compose.gpu.yml (RUNTIME_DEVICE=cuda) подставляет cu128
-ARG TORCH_INDEX=https://download.pytorch.org/whl/cpu
+# cpu — torch CPU поверх lock (по умолчанию); cuda — torch из uv.lock как есть: под Linux это сборка PyPI
+# со своими библиотеками CUDA (docker-compose.gpu.yml, RUNTIME_DEVICE=cuda)
+ARG TORCH_VARIANT=cpu
 
 # Слой зависимостей: только файлы проекта, чтобы кэшироваться независимо от исходников.
 COPY pyproject.toml uv.lock README.md ./
 COPY tools/tessa_export/pyproject.toml tools/tessa_export/README.md tools/tessa_export/
 RUN --mount=type=cache,target=/root/.cache/uv \
-    skip=""; for name in $SKIP_PACKAGES; do skip="$skip --no-install-package $name"; done \
+    skip=""; if [ "$TORCH_VARIANT" = "cpu" ]; then for name in $SKIP_PACKAGES; do skip="$skip --no-install-package $name"; done; fi \
     && uv sync --frozen --no-dev --no-install-workspace $skip
 
 COPY src src
@@ -47,9 +48,9 @@ COPY chainlit.md chainlit.md
 # Второй sync ставит проект и workspace-пакет; torch CPU — после него: sync приводит окружение
 # к lock и удалил бы пакет, поставленный отдельно.
 RUN --mount=type=cache,target=/root/.cache/uv \
-    skip=""; for name in $SKIP_PACKAGES; do skip="$skip --no-install-package $name"; done \
+    skip=""; if [ "$TORCH_VARIANT" = "cpu" ]; then for name in $SKIP_PACKAGES; do skip="$skip --no-install-package $name"; done; fi \
     && uv sync --frozen --no-dev $skip \
-    && uv pip install --index-url $TORCH_INDEX $TORCH_CPU
+    && if [ "$TORCH_VARIANT" = "cpu" ]; then uv pip install --index-url https://download.pytorch.org/whl/cpu $TORCH_CPU; fi
 
 ENV PATH="/app/.venv/bin:$PATH"
 CMD ["python", "-m", "mcp_server"]
