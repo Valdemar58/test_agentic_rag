@@ -25,6 +25,8 @@ ARG SKIP_PACKAGES="torch torchvision triton cuda-bindings cuda-pathfinder cuda-t
     nvidia-cufft nvidia-cufile nvidia-curand nvidia-cusolver nvidia-cusparse nvidia-cusparselt-cu13 \
     nvidia-nccl-cu13 nvidia-nvjitlink nvidia-nvshmem-cu13 nvidia-nvtx"
 ARG TORCH_CPU="torch==2.14.0 torchvision==0.29.0"
+# Индекс колёс torch: CPU по умолчанию; docker-compose.gpu.yml (RUNTIME_DEVICE=cuda) подставляет cu128
+ARG TORCH_INDEX=https://download.pytorch.org/whl/cpu
 
 # Слой зависимостей: только файлы проекта, чтобы кэшироваться независимо от исходников.
 COPY pyproject.toml uv.lock README.md ./
@@ -47,7 +49,7 @@ COPY chainlit.md chainlit.md
 RUN --mount=type=cache,target=/root/.cache/uv \
     skip=""; for name in $SKIP_PACKAGES; do skip="$skip --no-install-package $name"; done \
     && uv sync --frozen --no-dev $skip \
-    && uv pip install --index-url https://download.pytorch.org/whl/cpu $TORCH_CPU
+    && uv pip install --index-url $TORCH_INDEX $TORCH_CPU
 
 ENV PATH="/app/.venv/bin:$PATH"
 CMD ["python", "-m", "mcp_server"]

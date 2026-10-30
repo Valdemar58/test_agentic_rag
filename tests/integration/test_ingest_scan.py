@@ -34,10 +34,15 @@ REAL_CORPUS = Path("data/final_2026-09-15")
 def parser(tmp_path_factory: pytest.TempPathFactory) -> DocumentParser:
     settings = load_settings()
     vlm = DocumentParser(
-        CONFIG, vlm_base_url=settings.resolve_vlm_base_url(CONFIG), work_dir=tmp_path_factory.mktemp("w")
+        CONFIG,
+        vlm_base_url=settings.resolve_vlm_base_url(CONFIG),
+        vlm_model=settings.resolve_vlm_model(CONFIG),
+        vlm_headers=settings.vlm_headers(),
+        work_dir=tmp_path_factory.mktemp("w"),
     )
     try:
-        httpx.get(vlm.vlm_endpoint.replace("/chat/completions", "/models"), timeout=3).raise_for_status()
+        models_url = vlm.vlm_endpoint.replace("/chat/completions", "/models")
+        httpx.get(models_url, headers=settings.vlm_headers(), timeout=3).raise_for_status()
     except (httpx.HTTPError, OSError) as exc:
         pytest.skip(f"vllm-dots недоступен ({exc}); поднимите профиль ingest")
     return vlm

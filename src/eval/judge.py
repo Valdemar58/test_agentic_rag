@@ -147,7 +147,7 @@ def build_judge_llm(config: AppConfig, settings: Settings) -> OpenAILike:
         enable_thinking=False,
     )
     return OpenAILike(
-        model=config.vllm.qwen.served_model_name,
+        model=settings.resolve_llm_model(config),
         api_base=settings.resolve_llm_base_url(config),
         api_key=settings.llm_api_key.get_secret_value(),
         is_chat_model=True,

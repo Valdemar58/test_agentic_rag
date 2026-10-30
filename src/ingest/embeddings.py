@@ -64,7 +64,7 @@ def resolve_device(requested: str) -> str:
     import torch
 
     if requested == "cuda" and not torch.cuda.is_available():
-        logger.warning("CUDA запрошена для эмбеддингов, но недоступна в этой сборке torch — считаю на CPU")
+        logger.warning("CUDA запрошена, но недоступна в этой сборке torch или контейнере — считаю на CPU")
         return "cpu"
     return requested
 

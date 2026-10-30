@@ -10,10 +10,16 @@ import yaml
 from common.config import (
     CONFIG_PATH_ENV,
     DEFAULT_CONFIG_PATH,
+    PRESET_ENV,
     ROOT,
+    RUNTIME_DEVICE_ENV,
+    AppConfig,
     ConfigError,
+    apply_environment,
+    available_presets,
     config_path,
     load_app_config,
+    merge_config,
 )
 
 
@@ -126,6 +132,45 @@ def test_missing_and_invalid_yaml(tmp_path: Path) -> None:
     scalar.write_text("just text", encoding="utf-8")
     with pytest.raises(ConfigError, match="словарь"):
         load_app_config(scalar)
+
+
+def test_spark_preset_raises_limits_and_keeps_tz_rules() -> None:
+    """Пресет spark: только лимиты под большую модель; требования ТЗ и база app.yaml не меняются."""
+    base = _example()
+    config = AppConfig.model_validate(apply_environment(base, preset="spark", runtime_device=""))
+    assert "spark" in available_presets()
+    assert config.vllm.qwen.max_model_len == 65536
+    assert config.agent.tool_output.loop_context_chars > 14000
+    assert config.ingest.vlm.concurrency > 1
+    assert config.agent.max_tool_calls == 8  # FR-1 не зависит от железа
+    assert config.retrieval.default_statuses == ["active"]
+    # не затронутое пресетом остаётся из базы, а сама база не меняется
+    assert config.vllm.qwen.tool_call_parser == "hermes"
+    assert load_app_config(DEFAULT_CONFIG_PATH).vllm.qwen.max_model_len == 16384
+
+
+def test_runtime_device_and_unknown_preset() -> None:
+    raw = apply_environment(_example(), preset="", runtime_device="cuda")
+    config = AppConfig.model_validate(raw)
+    assert config.reranker.device == "cuda" and config.embedding.runtime_device == "cuda"
+    assert config.embedding.ingest_device == "cuda"
+    with pytest.raises(ConfigError, match="пресет не найден"):
+        apply_environment(_example(), preset="nope", runtime_device="")
+    with pytest.raises(ConfigError, match="RUNTIME_DEVICE"):
+        apply_environment(_example(), preset="", runtime_device="tpu")
+    assert merge_config({"a": {"b": 1, "c": 2}, "l": [1]}, {"a": {"b": 3}, "l": [2]}) == {
+        "a": {"b": 3, "c": 2},
+        "l": [2],
+    }
+
+
+def test_preset_comes_from_environment_only_without_explicit_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(CONFIG_PATH_ENV, raising=False)
+    monkeypatch.setenv(PRESET_ENV, "spark")
+    monkeypatch.setenv(RUNTIME_DEVICE_ENV, "")
+    assert load_app_config().vllm.qwen.max_model_len == 65536
+    # явный путь читается как есть: тесты и сравнение конфигураций не зависят от .env
+    assert load_app_config(DEFAULT_CONFIG_PATH).vllm.qwen.max_model_len == 16384
 
 
 def test_config_path_env_override(monkeypatch: pytest.MonkeyPatch) -> None:

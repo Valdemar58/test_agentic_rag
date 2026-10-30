@@ -8,7 +8,8 @@
       полный инжест с оркестрацией GPU (§2 ТЗ): останавливает vllm-qwen, поднимает vllm-dots, если
       есть сканы; фаза 1 — разбор всех новых/изменённых файлов; затем vllm-dots останавливается и
       фаза 2 считает эмбеддинги bge-m3 на свободном GPU и пишет в Qdrant; реестр — PostgreSQL.
-      --force переразбирает всё; --no-gpu-switch не трогает контейнеры (профили поднимает оператор);
+      --force переразбирает всё; --no-gpu-switch не трогает контейнеры (профили поднимает оператор;
+      так же и без флага, если VLM_BASE_URL указывает на другую машину);
       --restore-runtime в конце поднимает профиль runtime обратно и собирает глоссарий.
       Каталог корпуса сверяется с прошлым прогоном: другой каталог означает, что из индекса
       удалится всё, чего в нём нет, поэтому такой прогон требует явного --switch-corpus.
@@ -181,7 +182,12 @@ async def run_ingest(config: AppConfig, settings: Settings, corpus: Corpus, args
         embedding_dir = config.models.local_path(config.models.embedding)
         pipeline = IngestPipeline(
             config,
-            parser=DocumentParser(config, vlm_base_url=settings.resolve_vlm_base_url(config)),
+            parser=DocumentParser(
+                config,
+                vlm_base_url=settings.resolve_vlm_base_url(config),
+                vlm_model=settings.resolve_vlm_model(config),
+                vlm_headers=settings.vlm_headers(),
+            ),
             embedder=build_embedder(embedding_dir, config.embedding, ingest=True),
             index=index,
             counter=HfTokenCounter(embedding_dir),
@@ -195,7 +201,9 @@ async def run_ingest(config: AppConfig, settings: Settings, corpus: Corpus, args
             return EXIT_CONFIG
         work = await runner.preflight()
         print(f"План: {work.summary()}")
-        orchestrator = GpuOrchestrator(None if args.no_gpu_switch else Stack(config))
+        # dots.mocr на другой машине: локальных vLLM нет, переключать профили нечего
+        manage_gpu = not args.no_gpu_switch and not settings.vlm_is_external()
+        orchestrator = GpuOrchestrator(Stack(config) if manage_gpu else None)
         orchestrator.before_parse(needs_vlm=work.needs_vlm)
         report = await runner.run(before_index=orchestrator.before_index)
         orchestrator.after_run(restore_runtime=args.restore_runtime)

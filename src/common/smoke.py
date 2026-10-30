@@ -110,6 +110,9 @@ def check_qdrant(settings: Settings, *, timeout_s: float) -> CheckResult:
     try:
         with httpx.Client(timeout=timeout_s) as client:
             ready = client.get(f"{url}/readyz")
+            # порт открыт, а Qdrant нет (проброс Docker Desktop при остановленном контейнере отдаёт 503)
+            if ready.is_server_error:
+                raise ServiceUnavailable(f"Qdrant {url}: HTTP {ready.status_code}")
             info = client.get(url).json()
             collections = client.get(f"{url}/collections").json()
     except httpx.HTTPError as exc:
@@ -123,10 +126,12 @@ def check_qdrant(settings: Settings, *, timeout_s: float) -> CheckResult:
 # ---------- LLM ----------
 
 
-def _chat_payload(config: AppConfig, messages: list[dict[str, Any]], **extra: Any) -> dict[str, Any]:
+def _chat_payload(
+    settings: Settings, config: AppConfig, messages: list[dict[str, Any]], **extra: Any
+) -> dict[str, Any]:
     options = config.agent.llm_options("tool_loop")
     return {
-        "model": config.vllm.qwen.served_model_name,
+        "model": settings.resolve_llm_model(config),
         "messages": messages,
         "temperature": options.temperature,
         "top_p": options.top_p,
@@ -135,6 +140,10 @@ def _chat_payload(config: AppConfig, messages: list[dict[str, Any]], **extra: An
         "chat_template_kwargs": options.chat_template_kwargs(),
         **extra,
     }
+
+
+def _llm_client(settings: Settings, config: AppConfig) -> httpx.Client:
+    return httpx.Client(timeout=config.agent.llm.timeout_s, headers=settings.llm_headers())
 
 
 def _post_chat(client: httpx.Client, base_url: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -153,8 +162,8 @@ def check_llm_russian(settings: Settings, config: AppConfig) -> CheckResult:
     start = time.perf_counter()
     base_url = settings.resolve_llm_base_url(config)
     messages = [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": RUSSIAN_QUESTION}]
-    with httpx.Client(timeout=config.agent.llm.timeout_s) as client:
-        data = _post_chat(client, base_url, _chat_payload(config, messages))
+    with _llm_client(settings, config) as client:
+        data = _post_chat(client, base_url, _chat_payload(settings, config, messages))
     text = str(data["choices"][0]["message"].get("content") or "").strip()
     ok = bool(CYRILLIC.search(text))
     usage = data.get("usage", {})
@@ -167,9 +176,11 @@ def check_llm_tool_call(settings: Settings, config: AppConfig) -> CheckResult:
     start = time.perf_counter()
     base_url = settings.resolve_llm_base_url(config)
     messages = [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": TOOL_QUESTION}]
-    with httpx.Client(timeout=config.agent.llm.timeout_s) as client:
+    with _llm_client(settings, config) as client:
         data = _post_chat(
-            client, base_url, _chat_payload(config, messages, tools=[SEARCH_TOOL], tool_choice="auto")
+            client,
+            base_url,
+            _chat_payload(settings, config, messages, tools=[SEARCH_TOOL], tool_choice="auto"),
         )
     message = data["choices"][0]["message"]
     calls = message.get("tool_calls") or []
@@ -191,11 +202,11 @@ def check_llm_first_token(settings: Settings, config: AppConfig) -> CheckResult:
     start = time.perf_counter()
     base_url = settings.resolve_llm_base_url(config)
     messages = [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": RUSSIAN_QUESTION}]
-    payload = _chat_payload(config, messages, stream=True)
+    payload = _chat_payload(settings, config, messages, stream=True)
     first_token: float | None = None
     try:
         with (
-            httpx.Client(timeout=config.agent.llm.timeout_s) as client,
+            _llm_client(settings, config) as client,
             client.stream("POST", f"{base_url.rstrip('/')}/chat/completions", json=payload) as response,
         ):
             if response.status_code != httpx.codes.OK:

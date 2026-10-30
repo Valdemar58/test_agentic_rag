@@ -54,20 +54,23 @@ class BgeReranker:
         if self._model is None:
             from sentence_transformers import CrossEncoder
 
+            from ingest.embeddings import resolve_device
+
+            device = resolve_device(self._settings.device)
             model = CrossEncoder(
                 str(self._model_dir),
-                device=self._settings.device,
+                device=device,
                 local_files_only=True,
                 max_length=self._settings.max_length,
             )
-            quantized = self._settings.quantize_int8 and self._settings.device == "cpu"
+            quantized = self._settings.quantize_int8 and device == "cpu"
             if quantized:
                 _quantize_linear_layers(model)
             self._model = model
             logger.info(
                 "Reranker загружен из %s на %s%s",
                 self._model_dir,
-                self._settings.device,
+                device,
                 " (int8 Linear-слои)" if quantized else "",
             )
         return self._model

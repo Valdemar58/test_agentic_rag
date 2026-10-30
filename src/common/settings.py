@@ -8,7 +8,9 @@
 
 from __future__ import annotations
 
-from pydantic import Field, SecretStr
+from urllib.parse import urlsplit
+
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from common.config import AppConfig
@@ -17,6 +19,8 @@ from common.config import AppConfig
 # не слушают, и каждый запрос к Qdrant/vLLM ждал ~2 с до отката на IPv4 (замер 2026-09-15)
 LOCALHOST = "127.0.0.1"
 ASYNCPG_DRIVER = "postgresql+asyncpg"
+NO_API_KEY = "not-needed"
+LOCAL_VLLM_HOSTS = frozenset({LOCALHOST, "localhost", "::1", "vllm-qwen", "vllm-dots"})
 
 
 class Settings(BaseSettings):
@@ -49,7 +53,13 @@ class Settings(BaseSettings):
     qdrant_port: int = Field(default=6333, ge=1, le=65535, description="Порт Qdrant на хосте (как в compose)")
     llm_base_url: str | None = Field(default=None, description="OpenAI-совместимый endpoint Qwen3")
     vlm_base_url: str | None = Field(default=None, description="OpenAI-совместимый endpoint dots.mocr")
-    llm_api_key: SecretStr = Field(default=SecretStr("not-needed"), description="vLLM без ключа")
+    llm_api_key: SecretStr = Field(default=SecretStr(NO_API_KEY), description="vLLM без ключа")
+    vlm_api_key: SecretStr = Field(
+        default=SecretStr(""), description="Ключ endpoint dots.mocr; пусто — без ключа"
+    )
+    # Внешний vLLM (другая машина) может отдавать модель под своим именем; пусто — имя из app.yaml
+    llm_model: str | None = Field(default=None, description="Имя LLM в API; по умолчанию vllm.qwen")
+    vlm_model: str | None = Field(default=None, description="Имя VLM в API; по умолчанию vllm.dots")
     mcp_url: str | None = Field(default=None, description="URL MCP-сервера для агента")
 
     langfuse_enabled: bool = Field(
@@ -65,6 +75,12 @@ class Settings(BaseSettings):
     # OAUTH_GENERIC_* Chainlit (решение заказчика 2026-09-16), которые Chainlit читает сам.
     ui_username: str = Field(default="admin", description="Логин единственного пользователя UI (dev)")
     ui_password: SecretStr = Field(default=SecretStr("admin"), description="Пароль пользователя UI (dev)")
+
+    @field_validator("llm_api_key", mode="before")
+    @classmethod
+    def _empty_llm_key(cls, value: object) -> object:
+        # клиент OpenAI без ключа не создаётся; пустая строка из `.env` = vLLM без --api-key
+        return NO_API_KEY if value in ("", None) else value
 
     @property
     def database_url(self) -> str:
@@ -86,8 +102,38 @@ class Settings(BaseSettings):
     def resolve_vlm_base_url(self, config: AppConfig) -> str:
         return self.vlm_base_url or f"http://{LOCALHOST}:{config.vllm.dots.port}/v1"
 
+    def resolve_llm_model(self, config: AppConfig) -> str:
+        return self.llm_model or config.vllm.qwen.served_model_name
+
+    def resolve_vlm_model(self, config: AppConfig) -> str:
+        return self.vlm_model or config.vllm.dots.served_model_name
+
+    def llm_is_external(self) -> bool:
+        """LLM на другой машине: локальный vllm-qwen не поднимается и GPU этой машины не делится с ним."""
+        return is_external_url(self.llm_base_url)
+
+    def vlm_is_external(self) -> bool:
+        return is_external_url(self.vlm_base_url)
+
+    def llm_headers(self) -> dict[str, str]:
+        """Заголовок авторизации для прямых HTTP-запросов к LLM (клиент OpenAI ставит его сам)."""
+        return bearer_headers(self.llm_api_key)
+
+    def vlm_headers(self) -> dict[str, str]:
+        return bearer_headers(self.vlm_api_key)
+
     def resolve_mcp_url(self, config: AppConfig) -> str:
         return self.mcp_url or f"http://{LOCALHOST}:{config.mcp.port}{config.mcp.path}"
+
+
+def is_external_url(url: str | None) -> bool:
+    """Адрес не пустой и указывает не на эту машину и не на контейнер vLLM стенда."""
+    return bool(url) and urlsplit(url or "").hostname not in LOCAL_VLLM_HOSTS
+
+
+def bearer_headers(key: SecretStr) -> dict[str, str]:
+    value = key.get_secret_value()
+    return {"Authorization": f"Bearer {value}"} if value else {}
 
 
 def load_settings() -> Settings:

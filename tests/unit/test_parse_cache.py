@@ -65,3 +65,19 @@ def test_second_parse_is_served_from_cache(tmp_path: Path) -> None:
     disabled._native = converter
     disabled.parse(path, "native")
     assert converter.calls == 3 and not (tmp_path / "other" / CACHE_DIR).exists()
+
+
+def test_vlm_engine_gets_model_name_and_key() -> None:
+    """dots.mocr на другой машине: имя модели и ключ доходят до движка Docling; без них — как раньше."""
+    local = DocumentParser(CONFIG, vlm_base_url="http://127.0.0.1:1/v1").vlm_engine_options()
+    assert local.params["model"] == CONFIG.vllm.dots.served_model_name and local.headers == {}
+
+    remote = DocumentParser(
+        CONFIG,
+        vlm_base_url="http://spark.test:8001/v1/",
+        vlm_model="dots-remote",
+        vlm_headers={"Authorization": "Bearer spark-key"},
+    ).vlm_engine_options()
+    assert str(remote.url) == "http://spark.test:8001/v1/chat/completions"
+    assert remote.params["model"] == "dots-remote"
+    assert remote.headers == {"Authorization": "Bearer spark-key"}

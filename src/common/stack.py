@@ -32,9 +32,16 @@ OBSERVABILITY = "observability"
 MOCK = "mock"
 BASE = "base"
 GPU_SERVICE: dict[str, str] = {RUNTIME: "vllm-qwen", INGEST: "vllm-dots"}
+# Сервисы профиля runtime без vllm-qwen — для LLM на другой машине; зависимости compose поднимет сам
+RUNTIME_APP_SERVICES: tuple[str, ...] = ("mcp-server", "agent-ui")
+MOCK_SERVICES: tuple[str, ...] = ("mock-card-service",)
+OBSERVABILITY_SERVICES: tuple[str, ...] = ("langfuse-web", "langfuse-worker")
+EXTERNAL_LLM_URL_VAR = "LLM_BASE_URL_DOCKER"
 ALL_PROFILES: tuple[str, ...] = (RUNTIME, INGEST, OBSERVABILITY, MOCK)
 UP_TARGETS: tuple[str, ...] = (BASE, RUNTIME, INGEST)
 COMPOSE_FILE = ROOT / "docker-compose.yml"
+# Дополнение для RUNTIME_DEVICE=cuda: MCP-сервер в образе с CUDA-сборкой torch и с доступом к GPU
+GPU_COMPOSE_FILE = ROOT / "docker-compose.gpu.yml"
 MODELS_MOUNT = "/models"
 MIB_PER_GIB = 1024
 
@@ -136,6 +143,11 @@ def compose_environment(config: AppConfig, total_mib: int, *, wsl: bool | None =
     }
 
 
+def runtime_uses_gpu(config: AppConfig) -> bool:
+    """Reranker или эмбеддинг запроса в рантайме считаются на GPU (RUNTIME_DEVICE=cuda)."""
+    return config.reranker.device == "cuda" or config.embedding.runtime_device == "cuda"
+
+
 def parse_running_services(ps_output: str) -> set[str]:
     """Имена сервисов из `docker compose ps --format json` (массив или по объекту на строку)."""
     text = ps_output.strip()
@@ -168,11 +180,14 @@ class Stack:
         *,
         runner: CommandRunner = run_command,
         compose_file: Path = COMPOSE_FILE,
+        gpu_compose_file: Path = GPU_COMPOSE_FILE,
         gpu_total_mib: int | None = None,
     ) -> None:
         self._config = config
         self._runner = runner
-        self._compose_file = compose_file
+        self._compose_files = [compose_file]
+        if runtime_uses_gpu(config):
+            self._compose_files.append(gpu_compose_file)
         self._gpu_total_mib = gpu_total_mib
         self._environment: dict[str, str] | None = None
 
@@ -188,13 +203,20 @@ class Stack:
         return self._environment
 
     def compose(
-        self, args: Sequence[str], *, profiles: Sequence[str] = (), capture: bool = False
+        self,
+        args: Sequence[str],
+        *,
+        profiles: Sequence[str] = (),
+        capture: bool = False,
+        extra_env: Mapping[str, str] | None = None,
     ) -> CommandResult:
-        command = ["docker", "compose", "-f", str(self._compose_file)]
+        command = ["docker", "compose"]
+        for compose_file in self._compose_files:
+            command += ["-f", str(compose_file)]
         for profile in profiles:
             command += ["--profile", profile]
         command += list(args)
-        env = {**os.environ, **self.environment()}
+        env = {**os.environ, **self.environment(), **(extra_env or {})}
         result = self._runner(command, env=env, capture=capture)
         if result.returncode != 0:
             raise StackError(f"docker compose завершился с кодом {result.returncode}: {' '.join(args)}")
@@ -214,13 +236,20 @@ class Stack:
         switch: bool = False,
         wait: bool = False,
         mock: bool = True,
+        external_llm_url: str | None = None,
     ) -> None:
         """Поднять базу и профиль `target`; соперничающий GPU-профиль — ошибка или остановка при switch.
 
         С `runtime` по умолчанию поднимается и мок сервиса карточек (профиль `mock`); на стенде
-        с реальным сервисом карточек — `mock=False`."""
+        с реальным сервисом карточек — `mock=False`. С `external_llm_url` профиль runtime поднимается
+        без vllm-qwen: LLM работает на другой машине, GPU этой машины не занимается."""
         if target not in UP_TARGETS:
             raise StackError(f"неизвестная цель {target!r}; допустимо: {', '.join(UP_TARGETS)}")
+        if external_llm_url is not None:
+            if target != RUNTIME:
+                raise StackError("внешний LLM подключается только к профилю runtime")
+            self._up_runtime_external(external_llm_url, observability=observability, wait=wait, mock=mock)
+            return
         conflict = conflicting_service(target, self.running_services())
         if conflict is not None:
             if not switch:
@@ -238,6 +267,23 @@ class Stack:
         if wait:
             args.append("--wait")
         self.compose(args, profiles=profiles)
+
+    def _up_runtime_external(self, url: str, *, observability: bool, wait: bool, mock: bool) -> None:
+        """Профиль runtime перечислением сервисов: compose поднимает их зависимости, но не vllm-qwen."""
+        if not url.strip():
+            raise StackError("для внешнего LLM задайте LLM_BASE_URL в .env (адрес вида http://хост:порт/v1)")
+        profiles = [RUNTIME]
+        services = list(RUNTIME_APP_SERVICES)
+        if mock:
+            profiles.append(MOCK)
+            services += MOCK_SERVICES
+        if observability:
+            profiles.append(OBSERVABILITY)
+            services += OBSERVABILITY_SERVICES
+        args = ["up", "-d", "--remove-orphans"]
+        if wait:
+            args.append("--wait")
+        self.compose([*args, *services], profiles=profiles, extra_env={EXTERNAL_LLM_URL_VAR: url})
 
     def stop_service(self, service: str) -> None:
         profile = next(profile for profile, name in GPU_SERVICE.items() if name == service)

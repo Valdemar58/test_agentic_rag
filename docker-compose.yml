@@ -176,6 +176,9 @@ services:
       qdrant:
         condition: service_healthy
     environment:
+      # Пресет конфига и устройство reranker'а/эмбеддинга запроса — те же, что в .env
+      APP_PRESET: ${APP_PRESET:-}
+      RUNTIME_DEVICE: ${RUNTIME_DEVICE:-}
       QDRANT_URL: http://qdrant:6333
       # Внутри сети compose мок доступен по имени сервиса; для реального сервиса карточек задайте
       # CARD_SERVICE_URL_DOCKER (адрес, видимый из контейнера) и учётку Тессы.
@@ -207,12 +210,12 @@ services:
     profiles: [runtime]
     # Миграции Alembic применяются при старте: чистая БД → рабочее состояние без ручных шагов (FR-9)
     command: ["python", "-m", "ui", "--migrate", "--headless"]
+    # От vllm-qwen UI не зависит: с внешним LLM (LLM_BASE_URL на другую машину) контейнера нет,
+    # а с локальным UI сам ждёт готовности модели перед первым вопросом (ui.llm_ready_wait_s)
     depends_on:
       postgres-app:
         condition: service_healthy
       mcp-server:
-        condition: service_healthy
-      vllm-qwen:
         condition: service_healthy
     environment:
       APP_DB_HOST: postgres-app
@@ -220,7 +223,11 @@ services:
       APP_DB_PASSWORD: ${APP_DB_PASSWORD:-rag}
       APP_DB_NAME: ${APP_DB_NAME:-rag}
       MCP_URL: http://mcp-server:8020/mcp
-      LLM_BASE_URL: http://vllm-qwen:8000/v1
+      APP_PRESET: ${APP_PRESET:-}
+      # Пусто = локальный vllm-qwen; для внешнего LLM — его адрес, видимый из контейнера
+      LLM_BASE_URL: ${LLM_BASE_URL_DOCKER:-http://vllm-qwen:8000/v1}
+      LLM_API_KEY: ${LLM_API_KEY:-not-needed}
+      LLM_MODEL: ${LLM_MODEL:-}
       LANGFUSE_ENABLED: ${LANGFUSE_ENABLED:-false}
       LANGFUSE_URL: http://langfuse-web:3000
       LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-pk-lf-agentic-rag-dev}

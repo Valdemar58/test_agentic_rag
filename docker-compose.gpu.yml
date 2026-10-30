@@ -1,0 +1,17 @@
+# Дополнение к docker-compose.yml для RUNTIME_DEVICE=cuda: reranker и эмбеддинг запроса на GPU этой
+# машины (LLM при этом работает на другом сервере, карта свободна). scripts/stack.py подключает файл
+# сам, когда в конфиге устройство рантайма — cuda. Отдельный тег образа: CPU-образ остаётся как был.
+
+services:
+  mcp-server:
+    image: agentic-rag-app:cuda
+    build:
+      args:
+        TORCH_INDEX: https://download.pytorch.org/whl/cu128
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

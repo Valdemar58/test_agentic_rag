@@ -151,6 +151,61 @@ def test_up_runtime_with_observability_adds_profile_and_base_has_none() -> None:
         stack.up("gpu")
 
 
+def test_up_runtime_with_external_llm_skips_vllm_qwen() -> None:
+    """LLM на другой машине: сервисы runtime перечислены явно, vllm-qwen не поднимается и GPU не трогается."""
+    config = load_app_config(DEFAULT_CONFIG_PATH)
+    runner = FakeRunner(running='[{"Service": "vllm-dots", "State": "running"}]')
+    stack = Stack(config, runner=runner, gpu_total_mib=RTX_5080_MIB)
+    stack.up("runtime", observability=True, wait=True, external_llm_url="http://spark.test:8000/v1")
+    up_call = runner.calls[-1]
+    # соперничающий vllm-dots не останавливается: этот профиль GPU не занимает
+    assert not any("rm" in call for call in runner.calls)
+    assert "vllm-qwen" not in up_call
+    assert up_call[up_call.index("--wait") + 1 :] == [
+        "mcp-server",
+        "agent-ui",
+        "mock-card-service",
+        "langfuse-web",
+        "langfuse-worker",
+    ]
+    env = runner.envs[-1]
+    assert env is not None and env["LLM_BASE_URL_DOCKER"] == "http://spark.test:8000/v1"
+
+    stack.up("runtime", mock=False, external_llm_url="http://spark.test:8000/v1")
+    assert runner.calls[-1][-3:] == ["--remove-orphans", "mcp-server", "agent-ui"]
+    with pytest.raises(StackError, match="LLM_BASE_URL"):
+        stack.up("runtime", external_llm_url="")
+    with pytest.raises(StackError, match="только к профилю runtime"):
+        stack.up("ingest", external_llm_url="http://spark.test:8000/v1")
+
+
+def test_agent_ui_does_not_require_local_vllm() -> None:
+    """Иначе compose поднимет vllm-qwen как зависимость agent-ui и режим внешнего LLM сломается."""
+    compose = yaml.safe_load((DEFAULT_CONFIG_PATH.parent.parent / "docker-compose.yml").read_text("utf-8"))
+    services = compose["services"]
+    assert "vllm-qwen" not in services["agent-ui"]["depends_on"]
+    for name in ("mcp-server", "agent-ui", "mock-card-service", "langfuse-web", "langfuse-worker"):
+        assert name in services, name
+    # пресет из .env доходит до обоих контейнеров, устройство рантайма — до MCP (там reranker)
+    assert "APP_PRESET" in services["agent-ui"]["environment"]
+    assert {"APP_PRESET", "RUNTIME_DEVICE"} <= set(services["mcp-server"]["environment"])
+
+
+def test_runtime_device_cuda_adds_gpu_compose_file() -> None:
+    config = load_app_config(DEFAULT_CONFIG_PATH)
+    runner = FakeRunner()
+    Stack(config, runner=runner, gpu_total_mib=RTX_5080_MIB).status()
+    assert "docker-compose.gpu.yml" not in " ".join(runner.calls[-1])
+
+    on_gpu = config.model_copy(update={"reranker": config.reranker.model_copy(update={"device": "cuda"})})
+    Stack(on_gpu, runner=runner, gpu_total_mib=RTX_5080_MIB).status()
+    files = [runner.calls[-1][i + 1] for i, item in enumerate(runner.calls[-1]) if item == "-f"]
+    assert [Path(file).name for file in files] == ["docker-compose.yml", "docker-compose.gpu.yml"]
+    gpu = yaml.safe_load(Path(files[1]).read_text("utf-8"))["services"]["mcp-server"]
+    assert gpu["build"]["args"]["TORCH_INDEX"].endswith("/cu128")
+    assert gpu["deploy"]["resources"]["reservations"]["devices"][0]["capabilities"] == ["gpu"]
+
+
 def test_down_covers_all_profiles_and_volumes_flag() -> None:
     config = load_app_config(DEFAULT_CONFIG_PATH)
     runner = FakeRunner()
@@ -174,6 +229,8 @@ def test_agent_ui_container_gets_every_setting_the_agent_reads() -> None:
     needed = (
         "MCP_URL",
         "LLM_BASE_URL",
+        "LLM_API_KEY",
+        "LLM_MODEL",
         "APP_DB_HOST",
         "APP_DB_USER",
         "APP_DB_PASSWORD",

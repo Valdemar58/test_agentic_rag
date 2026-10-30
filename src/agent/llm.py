@@ -35,7 +35,7 @@ def build_llm(config: AppConfig, settings: Settings, role: LlmRole) -> OpenAILik
     """LLM для роли агента: Qwen3 профиля runtime, режим размышлений и сэмплинг по `agent.thinking`."""
     options = config.agent.llm_options(role)
     return OpenAILike(
-        model=config.vllm.qwen.served_model_name,
+        model=settings.resolve_llm_model(config),
         api_base=settings.resolve_llm_base_url(config),
         api_key=settings.llm_api_key.get_secret_value(),
         is_chat_model=True,

@@ -28,7 +28,7 @@ async def test_first_signal_within_budget_on_live_stand() -> None:
     settings = load_settings()
     base_url = settings.resolve_llm_base_url(config)
     try:
-        httpx.get(f"{base_url}/models", timeout=5).raise_for_status()
+        httpx.get(f"{base_url}/models", headers=settings.llm_headers(), timeout=5).raise_for_status()
     except httpx.HTTPError as exc:
         pytest.skip(f"vLLM {base_url} недоступен: {exc}")
     try:

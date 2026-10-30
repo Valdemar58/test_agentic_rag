@@ -2,21 +2,27 @@
 
 Здесь структура конфига и его загрузка. Секреты, URL сервисов и пути к внешнему коду в файл не
 попадают: они читаются из переменных окружения (`common.settings`). Путь к файлу можно
-переопределить переменной окружения `APP_CONFIG_PATH`.
+переопределить переменной окружения `APP_CONFIG_PATH`, пресет поверх него — `APP_PRESET`.
 """
 
 from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal, get_args
 
 import yaml
+from dotenv import dotenv_values
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG_PATH = ROOT / "configs" / "app.yaml"
+PRESETS_DIR = ROOT / "configs" / "presets"
 CONFIG_PATH_ENV = "APP_CONFIG_PATH"
+# Пресет поверх app.yaml (например, spark — большая модель на отдельном сервере) и устройство
+# reranker'а и эмбеддинга запроса; обе переменные читаются из окружения или .env
+PRESET_ENV = "APP_PRESET"
+RUNTIME_DEVICE_ENV = "RUNTIME_DEVICE"
 
 Device = Literal["cpu", "cuda"]
 DocStatus = Literal["active", "cancelled", "draft"]
@@ -190,6 +196,7 @@ class VlmSettings(StrictModel):
     image_scale: float = Field(gt=0, description="Масштаб растеризации страницы pdf для VLM")
     raster_image_scale: float = Field(gt=0, description="Масштаб для готовых изображений (jpg/png/tiff)")
     timeout_s: float = Field(gt=0)
+    concurrency: int = Field(gt=0, description="Сколько страниц одновременно отправляется в dots.mocr")
 
 
 class ChunkingSettings(StrictModel):
@@ -604,9 +611,15 @@ def config_path() -> Path:
     return Path(override) if override else DEFAULT_CONFIG_PATH
 
 
-def load_app_config(path: Path | None = None) -> AppConfig:
-    """Читает YAML и валидирует его строго: неизвестные и пропущенные поля — ошибка."""
-    target = path or config_path()
+def environment_value(name: str) -> str:
+    """Переменная процесса, иначе строка из `.env` в корне проекта (как у pydantic-settings)."""
+    value = os.environ.get(name)
+    if value is None:
+        value = dotenv_values(ROOT / ".env").get(name)
+    return (value or "").strip()
+
+
+def _read_yaml(target: Path) -> dict[str, Any]:
     try:
         raw = yaml.safe_load(target.read_text(encoding="utf-8"))
     except FileNotFoundError as exc:
@@ -615,6 +628,56 @@ def load_app_config(path: Path | None = None) -> AppConfig:
         raise ConfigError(f"конфиг {target} не разбирается как YAML: {exc}") from exc
     if not isinstance(raw, dict):
         raise ConfigError(f"конфиг {target}: ожидался словарь верхнего уровня")
+    return raw
+
+
+def merge_config(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    """Пресет поверх базы: словари сливаются вглубь, остальные значения заменяются целиком."""
+    merged = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = merge_config(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def available_presets() -> list[str]:
+    return sorted(path.stem for path in PRESETS_DIR.glob("*.yaml"))
+
+
+def apply_environment(raw: dict[str, Any], *, preset: str, runtime_device: str) -> dict[str, Any]:
+    """Пресет из `configs/presets/<имя>.yaml` и устройство reranker'а и эмбеддинга запроса."""
+    if preset:
+        preset_path = PRESETS_DIR / f"{preset}.yaml"
+        if not preset_path.is_file():
+            known = ", ".join(available_presets()) or "нет"
+            raise ConfigError(f"{PRESET_ENV}={preset}: пресет не найден (есть: {known})")
+        raw = merge_config(raw, _read_yaml(preset_path))
+    if runtime_device:
+        if runtime_device not in get_args(Device):
+            raise ConfigError(
+                f"{RUNTIME_DEVICE_ENV}={runtime_device}: допустимо {', '.join(get_args(Device))}"
+            )
+        raw = merge_config(
+            raw, {"embedding": {"runtime_device": runtime_device}, "reranker": {"device": runtime_device}}
+        )
+    return raw
+
+
+def load_app_config(path: Path | None = None) -> AppConfig:
+    """Читает YAML и валидирует его строго: неизвестные и пропущенные поля — ошибка.
+
+    Без явного пути поверх базового конфига применяются `APP_PRESET` и `RUNTIME_DEVICE` из окружения
+    или `.env`; явный путь читается как есть (тесты и сравнение конфигураций не зависят от `.env`)."""
+    target = path or config_path()
+    raw = _read_yaml(target)
+    if path is None:
+        raw = apply_environment(
+            raw,
+            preset=environment_value(PRESET_ENV),
+            runtime_device=environment_value(RUNTIME_DEVICE_ENV),
+        )
     try:
         return AppConfig.model_validate(raw)
     except ValidationError as exc:

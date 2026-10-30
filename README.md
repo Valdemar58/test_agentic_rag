@@ -56,6 +56,41 @@ uv run python scripts/stack.py down
   Порты инфраструктуры публикуются только на 127.0.0.1; если 5432 занят, задайте `APP_DB_PORT`.
 - Рантайм офлайн: `HF_HUB_OFFLINE=1`, телеметрия vLLM, Qdrant и Langfuse выключена.
 
+### LLM и dots.mocr на другой машине
+
+Если vLLM работает на отдельном сервере (например, DGX Spark), всё настраивается в `.env`,
+конфиги руками не правятся:
+
+```
+LLM_BASE_URL=http://<сервер>:8000/v1
+LLM_API_KEY=<ключ>
+LLM_MODEL=<id из GET /v1/models>
+VLM_BASE_URL=http://<сервер>:8001/v1
+VLM_API_KEY=<ключ>
+VLM_MODEL=<id из GET /v1/models>
+APP_PRESET=spark          # лимиты под большую модель: контекст 64k, глубже поиск, параллельный dots.mocr
+RUNTIME_DEVICE=cuda       # необязательно: reranker и эмбеддинг запроса на GPU этой машины
+```
+
+Команды те же, что и с локальной моделью:
+
+```
+uv run python scripts/stack.py up runtime --wait   # qdrant, postgres, MCP, UI, мок — без vllm-qwen
+uv run python scripts/smoke.py                     # LLM проверяется на сервере
+uv run python scripts/run_ingest.py run            # сканы — на dots.mocr сервера
+```
+
+- Адрес на другую машину распознаётся сам: `up runtime` не создаёт vllm-qwen (образ vLLM не скачивается),
+  инжест не переключает профили GPU. Адреса `127.0.0.1`, `localhost`, `vllm-qwen`, `vllm-dots` — локальные.
+- `APP_PRESET` накладывает `configs/presets/<имя>.yaml` поверх `app.yaml`; пустое значение — конфигурация
+  приёмки (RTX 3080, Qwen3-8B, контекст 16k). Окно пресета spark (65 536) должно совпадать с
+  `max_model_len` сервера.
+- `RUNTIME_DEVICE=cuda`: `stack.py` подключает `docker-compose.gpu.yml` — MCP-сервер собирается в образ
+  с CUDA-сборкой torch (`agentic-rag-app:cuda`, первая сборка дольше) и получает GPU. Без доступной
+  видеокарты reranker и эмбеддинг откатываются на CPU с предупреждением в логе.
+- Модель, отличная от Qwen3-8B AWQ, — отступление от ТЗ (бюджет 12 ГиБ): метрики на ней не равны метрикам
+  приёмки (N27).
+
 ## Экспорт корпуса из Тессы (этап 2)
 
 Корпус собирается отдельным инструментом в контуре заказчика: он ходит в Тессу по SDK, выгружает

@@ -1,0 +1,53 @@
+# Пресет «spark»: LLM и dots.mocr на отдельном сервере (DGX Spark, запрос заказчика 2026-10-30).
+# Включается строкой APP_PRESET=spark в .env; адреса, ключи и имена моделей — LLM_*/VLM_* там же.
+# Здесь только то, что отличается от app.yaml: базовые лимиты подогнаны под Qwen3-8B с контекстом
+# 16 384 токена на RTX 3080 12 ГиБ, а сервер отдаёт модель 27B с контекстом 65 536. Бюджеты подняты
+# примерно втрое, а не вчетверо: длинный промпт стоит времени до первого токена.
+# Метрики, снятые с этим пресетом, к приёмке на 3080 не относятся (N27).
+
+vllm:
+  qwen:
+    # Должно совпадать с max_model_len сервера (GET /v1/models): по нему считается остаток контекста
+    max_model_len: 65536
+
+retrieval:
+  prefetch_limit: 80
+  rerank_candidates: 40
+  top_k: 8
+  max_top_k: 30
+  content_max_tokens: 10000
+  content_max_sections: 80
+
+agent:
+  llm:
+    max_tokens: 4096
+    thinking_max_tokens: 12288
+    min_answer_tokens: 6144
+    # Модель крупнее и генерирует медленнее: прежних 120 с на длинный ответ с размышлениями не хватит
+    timeout_s: 300
+  loop_timeout_s: 480
+  tool_output:
+    fragment_chars: 2000
+    card_chars: 8000
+    section_chars: 10000
+    content_chars: 24000
+    loop_context_chars: 48000
+    context_reserve_chars: 4000
+  answer:
+    evidence_max_chars: 60000
+    context_chars: 3000
+  memory:
+    summary_trigger_chars: 36000
+    summary_max_words: 500
+  cached_evidence_chars: 12000
+  rewrite:
+    answer_chars: 2000
+
+ingest:
+  vlm:
+    # dots.mocr на сервере работает рядом с LLM и не делит с ней 12 ГиБ — страницы идут параллельно
+    concurrency: 4
+
+eval:
+  judge:
+    source_chars: 3600

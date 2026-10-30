@@ -30,7 +30,11 @@ CONFIG = load_app_config(DEFAULT_CONFIG_PATH)
 def parser(tmp_path_factory: pytest.TempPathFactory) -> Iterator[DocumentParser]:
     settings = load_settings()
     yield DocumentParser(
-        CONFIG, vlm_base_url=settings.resolve_vlm_base_url(CONFIG), work_dir=tmp_path_factory.mktemp("work")
+        CONFIG,
+        vlm_base_url=settings.resolve_vlm_base_url(CONFIG),
+        vlm_model=settings.resolve_vlm_model(CONFIG),
+        vlm_headers=settings.vlm_headers(),
+        work_dir=tmp_path_factory.mktemp("work"),
     )
 
 
@@ -42,7 +46,8 @@ def _require_docling_models() -> None:
 
 def _require_vlm(parser: DocumentParser) -> None:
     try:
-        httpx.get(parser.vlm_endpoint.replace("/chat/completions", "/models"), timeout=3).raise_for_status()
+        models_url = parser.vlm_endpoint.replace("/chat/completions", "/models")
+        httpx.get(models_url, headers=load_settings().vlm_headers(), timeout=3).raise_for_status()
     except (httpx.HTTPError, OSError) as exc:
         pytest.skip(f"vllm-dots недоступен ({exc}); поднимите профиль ingest")
 

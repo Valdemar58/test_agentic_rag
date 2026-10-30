@@ -57,9 +57,19 @@ class Parser(Protocol):
 class DocumentParser:
     """Ленивая обёртка над двумя `DocumentConverter`: конвертеры создаются при первом обращении."""
 
-    def __init__(self, config: AppConfig, *, vlm_base_url: str, work_dir: Path | None = None) -> None:
+    def __init__(
+        self,
+        config: AppConfig,
+        *,
+        vlm_base_url: str,
+        vlm_model: str | None = None,
+        vlm_headers: dict[str, str] | None = None,
+        work_dir: Path | None = None,
+    ) -> None:
         self._config = config
         self._vlm_base_url = vlm_base_url.rstrip("/")
+        self._vlm_model = vlm_model or config.vllm.dots.served_model_name
+        self._vlm_headers = vlm_headers or {}
         self._work_dir = work_dir or config.paths.work_dir_absolute
         self._native: Any = None
         self._vlm: Any = None
@@ -100,30 +110,32 @@ class DocumentParser:
             )
         return self._native
 
+    def vlm_engine_options(self) -> Any:
+        """Параметры обращения Docling к dots.mocr: адрес, имя модели, ключ (если задан)."""
+        from docling.datamodel.vlm_engine_options import ApiVlmEngineOptions
+        from docling.models.inference_engines.vlm.base import VlmEngineType
+
+        vlm = self._config.ingest.vlm
+        return ApiVlmEngineOptions(
+            engine_type=VlmEngineType.API,
+            url=self.vlm_endpoint,
+            headers=self._vlm_headers,
+            params={"model": self._vlm_model, "max_tokens": vlm.max_tokens, "temperature": 0.0},
+            timeout=vlm.timeout_s,
+            concurrency=vlm.concurrency,
+        )
+
     def _vlm_converter(self) -> Any:
         if self._vlm is None:
             from docling.datamodel.accelerator_options import AcceleratorOptions
             from docling.datamodel.base_models import InputFormat
             from docling.datamodel.pipeline_options import VlmConvertOptions, VlmPipelineOptions
-            from docling.datamodel.vlm_engine_options import ApiVlmEngineOptions
             from docling.document_converter import DocumentConverter, ImageFormatOption, PdfFormatOption
-            from docling.models.inference_engines.vlm.base import VlmEngineType
             from docling.pipeline.vlm_pipeline import VlmPipeline
 
             vlm = self._config.ingest.vlm
             docling = self._config.ingest.docling
-            engine = ApiVlmEngineOptions(
-                engine_type=VlmEngineType.API,
-                url=self.vlm_endpoint,
-                params={
-                    "model": self._config.vllm.dots.served_model_name,
-                    "max_tokens": vlm.max_tokens,
-                    "temperature": 0.0,
-                },
-                timeout=vlm.timeout_s,
-                concurrency=1,
-            )
-            preset = VlmConvertOptions.from_preset(DOTS_PRESET, engine_options=engine)
+            preset = VlmConvertOptions.from_preset(DOTS_PRESET, engine_options=self.vlm_engine_options())
 
             def pipeline_for(scale: float) -> Any:
                 return VlmPipelineOptions(

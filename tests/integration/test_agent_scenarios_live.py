@@ -51,7 +51,7 @@ async def runner(config: AppConfig) -> AsyncIterator[AgentRunner]:
     llm_url = settings.resolve_llm_base_url(config)
     mcp_url = settings.resolve_mcp_url(config)
     try:
-        httpx.get(f"{llm_url}/models", timeout=5).raise_for_status()
+        httpx.get(f"{llm_url}/models", headers=settings.llm_headers(), timeout=5).raise_for_status()
         httpx.get(mcp_url.rsplit("/", 1)[0] + HEALTH_PATH, timeout=5).raise_for_status()
     except httpx.HTTPError as exc:
         pytest.skip(f"стенд недоступен ({exc}); нужны профиль runtime и MCP-сервер")

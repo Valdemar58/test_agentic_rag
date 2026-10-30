@@ -5,6 +5,7 @@ from __future__ import annotations
 import httpx
 import respx
 from llama_index.core.base.llms.types import ChatMessage, TextBlock, ThinkingBlock
+from pydantic import SecretStr
 
 from agent.llm import CHAT_TEMPLATE_KWARGS, EXTRA_BODY, build_llm, llm_ready, thinking_text
 from common.config import DEFAULT_CONFIG_PATH, load_app_config
@@ -47,6 +48,24 @@ def test_build_llm_targets_vllm_with_tool_calling_and_extra_body() -> None:
     answer = build_llm(CONFIG, SETTINGS, "answer")
     assert answer.additional_kwargs[EXTRA_BODY][CHAT_TEMPLATE_KWARGS] == {"enable_thinking": True}
     assert answer.max_tokens == CONFIG.agent.llm.thinking_max_tokens
+
+
+async def test_external_llm_gets_model_name_and_key_from_settings() -> None:
+    """vLLM на другой машине отдаёт модель под своим именем и требует ключ (запрос заказчика 2026-10-30)."""
+    remote = Settings(
+        _env_file=None,
+        llm_base_url="http://spark.test/v1",
+        llm_model="qwen3.8-27b",
+        llm_api_key=SecretStr("spark-key"),
+    )
+    llm = build_llm(CONFIG, remote, "tool_loop")
+    assert llm.model == "qwen3.8-27b" and llm.api_key == "spark-key"
+    with respx.mock() as router:
+        route = router.get("http://spark.test/v1/models").mock(
+            return_value=httpx.Response(200, json={"object": "list", "data": [{"id": "qwen3.8-27b"}]})
+        )
+        assert await llm_ready(CONFIG, remote, timeout_s=1) is True
+    assert route.calls.last.request.headers["Authorization"] == "Bearer spark-key"
 
 
 def test_thinking_text_collects_thinking_blocks_only() -> None:
