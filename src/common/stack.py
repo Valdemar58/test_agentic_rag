@@ -24,6 +24,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+import httpx
+
 from common.config import ROOT, AppConfig
 
 RUNTIME = "runtime"
@@ -37,6 +39,8 @@ RUNTIME_APP_SERVICES: tuple[str, ...] = ("mcp-server", "agent-ui")
 MOCK_SERVICES: tuple[str, ...] = ("mock-card-service",)
 OBSERVABILITY_SERVICES: tuple[str, ...] = ("langfuse-web", "langfuse-worker")
 EXTERNAL_LLM_URL_VAR = "LLM_BASE_URL_DOCKER"
+EXTERNAL_LLM_MODEL_VAR = "LLM_MODEL"
+EXTERNAL_LLM_KEY_VAR = "LLM_API_KEY"
 ALL_PROFILES: tuple[str, ...] = (RUNTIME, INGEST, OBSERVABILITY, MOCK)
 UP_TARGETS: tuple[str, ...] = (BASE, RUNTIME, INGEST)
 COMPOSE_FILE = ROOT / "docker-compose.yml"
@@ -148,6 +152,24 @@ def runtime_uses_gpu(config: AppConfig) -> bool:
     return config.reranker.device == "cuda" or config.embedding.runtime_device == "cuda"
 
 
+def fetch_served_models(base_url: str, headers: Mapping[str, str], *, timeout_s: float) -> list[str]:
+    """Имена моделей, которые отдаёт OpenAI-совместимый сервер (`GET /models`)."""
+    try:
+        response = httpx.get(f"{base_url.rstrip('/')}/models", headers=dict(headers), timeout=timeout_s)
+        response.raise_for_status()
+        return [str(item["id"]) for item in response.json()["data"]]
+    except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
+        raise StackError(f"LLM-сервер {base_url} не ответил списком моделей: {exc}") from exc
+
+
+def pick_served_model(models: Sequence[str], base_url: str) -> str:
+    """Единственная модель сервера; при нескольких выбор за LLM_MODEL в .env."""
+    if len(models) == 1:
+        return models[0]
+    found = ", ".join(models) or "нет ни одной"
+    raise StackError(f"LLM-сервер {base_url} отдаёт модели: {found}. Укажите нужную в LLM_MODEL в .env")
+
+
 def parse_running_services(ps_output: str) -> set[str]:
     """Имена сервисов из `docker compose ps --format json` (массив или по объекту на строку)."""
     text = ps_output.strip()
@@ -237,18 +259,22 @@ class Stack:
         wait: bool = False,
         mock: bool = True,
         external_llm_url: str | None = None,
+        external_llm_env: Mapping[str, str] | None = None,
     ) -> None:
         """Поднять базу и профиль `target`; соперничающий GPU-профиль — ошибка или остановка при switch.
 
         С `runtime` по умолчанию поднимается и мок сервиса карточек (профиль `mock`); на стенде
         с реальным сервисом карточек — `mock=False`. С `external_llm_url` профиль runtime поднимается
-        без vllm-qwen: LLM работает на другой машине, GPU этой машины не занимается."""
+        без vllm-qwen: LLM работает на другой машине, GPU этой машины не занимается; `external_llm_env`
+        (имя модели и ключ) передаётся в контейнеры явно, а не через подстановку compose из .env."""
         if target not in UP_TARGETS:
             raise StackError(f"неизвестная цель {target!r}; допустимо: {', '.join(UP_TARGETS)}")
         if external_llm_url is not None:
             if target != RUNTIME:
                 raise StackError("внешний LLM подключается только к профилю runtime")
-            self._up_runtime_external(external_llm_url, observability=observability, wait=wait, mock=mock)
+            self._up_runtime_external(
+                external_llm_url, external_llm_env or {}, observability=observability, wait=wait, mock=mock
+            )
             return
         conflict = conflicting_service(target, self.running_services())
         if conflict is not None:
@@ -268,7 +294,9 @@ class Stack:
             args.append("--wait")
         self.compose(args, profiles=profiles)
 
-    def _up_runtime_external(self, url: str, *, observability: bool, wait: bool, mock: bool) -> None:
+    def _up_runtime_external(
+        self, url: str, llm_env: Mapping[str, str], *, observability: bool, wait: bool, mock: bool
+    ) -> None:
         """Профиль runtime перечислением сервисов: compose поднимает их зависимости, но не vllm-qwen.
 
         Оставшийся от прошлых запусков локальный vllm-qwen (restart: unless-stopped) останавливается:
@@ -289,7 +317,7 @@ class Stack:
         args = ["up", "-d", "--remove-orphans"]
         if wait:
             args.append("--wait")
-        self.compose([*args, *services], profiles=profiles, extra_env={EXTERNAL_LLM_URL_VAR: url})
+        self.compose([*args, *services], profiles=profiles, extra_env={**llm_env, EXTERNAL_LLM_URL_VAR: url})
 
     def stop_service(self, service: str) -> None:
         profile = next(profile for profile, name in GPU_SERVICE.items() if name == service)

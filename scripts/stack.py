@@ -14,7 +14,8 @@
 бюджета 12 ГиБ в configs/app.yaml и фактического объёма карты (см. `env`).
 
 Если `LLM_BASE_URL` в .env указывает на другую машину, `up runtime` поднимает MCP, UI и базу без
-vllm-qwen. `RUNTIME_DEVICE=cuda` отдаёт MCP-серверу GPU (reranker и эмбеддинг запроса).
+vllm-qwen; без `LLM_MODEL` берётся единственная модель этого сервера.
+`RUNTIME_DEVICE=cuda` отдаёт MCP-серверу GPU (reranker и эмбеддинг запроса).
 """
 
 from __future__ import annotations
@@ -25,7 +26,14 @@ from pathlib import Path
 
 from common.config import ConfigError, load_app_config
 from common.settings import load_settings
-from common.stack import Stack, StackError
+from common.stack import (
+    EXTERNAL_LLM_KEY_VAR,
+    EXTERNAL_LLM_MODEL_VAR,
+    Stack,
+    StackError,
+    fetch_served_models,
+    pick_served_model,
+)
 
 EXIT_OK = 0
 EXIT_FAILURE = 1
@@ -76,6 +84,19 @@ def main(argv: list[str] | None = None) -> int:
             settings = load_settings()
             external = args.target == "runtime" and settings.llm_is_external()
             external_llm_url = settings.llm_base_url if external else None
+            external_llm_env: dict[str, str] = {}
+            if external_llm_url:
+                # Без LLM_MODEL — единственная модель сервера: имя из app.yaml на чужом vLLM даёт 404
+                model = settings.llm_model or pick_served_model(
+                    fetch_served_models(
+                        external_llm_url, settings.llm_headers(), timeout_s=config.agent.llm.timeout_s
+                    ),
+                    external_llm_url,
+                )
+                external_llm_env = {
+                    EXTERNAL_LLM_MODEL_VAR: model,
+                    EXTERNAL_LLM_KEY_VAR: settings.llm_api_key.get_secret_value(),
+                }
             stack.up(
                 args.target,
                 observability=args.observability,
@@ -83,11 +104,16 @@ def main(argv: list[str] | None = None) -> int:
                 wait=args.wait,
                 mock=not args.no_mock,
                 external_llm_url=external_llm_url,
+                external_llm_env=external_llm_env,
             )
             extras = (
                 (" + mock" if args.target == "runtime" and not args.no_mock else "")
                 + (" + observability" if args.observability else "")
-                + (f", LLM: {external_llm_url}" if external_llm_url else "")
+                + (
+                    f", LLM: {external_llm_url} ({external_llm_env[EXTERNAL_LLM_MODEL_VAR]})"
+                    if external_llm_url
+                    else ""
+                )
             )
             print(f"Стенд поднят: {args.target}{extras}")
             return EXIT_OK

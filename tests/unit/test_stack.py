@@ -20,6 +20,7 @@ from common.stack import (
     docker_runs_in_wsl,
     gpu_memory_utilization,
     parse_running_services,
+    pick_served_model,
 )
 
 RTX_3080_MIB = 12288
@@ -171,12 +172,27 @@ def test_up_runtime_with_external_llm_skips_vllm_qwen() -> None:
     env = runner.envs[-1]
     assert env is not None and env["LLM_BASE_URL_DOCKER"] == "http://spark.test:8000/v1"
 
+    # имя модели и ключ идут в контейнеры явно, мимо подстановки compose из .env
+    llm_env = {"LLM_MODEL": "qwen3.8-27b", "LLM_API_KEY": "spark-key"}
+    stack.up("runtime", external_llm_url="http://spark.test:8000/v1", external_llm_env=llm_env)
+    env = runner.envs[-1]
+    assert env is not None and env["LLM_MODEL"] == "qwen3.8-27b" and env["LLM_API_KEY"] == "spark-key"
+
     stack.up("runtime", mock=False, external_llm_url="http://spark.test:8000/v1")
     assert runner.calls[-1][-3:] == ["--remove-orphans", "mcp-server", "agent-ui"]
     with pytest.raises(StackError, match="LLM_BASE_URL"):
         stack.up("runtime", external_llm_url="")
     with pytest.raises(StackError, match="только к профилю runtime"):
         stack.up("ingest", external_llm_url="http://spark.test:8000/v1")
+
+
+def test_external_model_is_the_single_one_served() -> None:
+    """Без LLM_MODEL берётся единственная модель сервера; при нескольких — понятная ошибка."""
+    assert pick_served_model(["qwen3.8-27b"], "http://spark.test:8000/v1") == "qwen3.8-27b"
+    with pytest.raises(StackError, match="LLM_MODEL"):
+        pick_served_model(["a", "b"], "http://spark.test:8000/v1")
+    with pytest.raises(StackError, match="нет ни одной"):
+        pick_served_model([], "http://spark.test:8000/v1")
 
 
 def test_external_llm_stops_leftover_local_vllm() -> None:
