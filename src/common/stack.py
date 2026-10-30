@@ -269,9 +269,15 @@ class Stack:
         self.compose(args, profiles=profiles)
 
     def _up_runtime_external(self, url: str, *, observability: bool, wait: bool, mock: bool) -> None:
-        """Профиль runtime перечислением сервисов: compose поднимает их зависимости, но не vllm-qwen."""
+        """Профиль runtime перечислением сервисов: compose поднимает их зависимости, но не vllm-qwen.
+
+        Оставшийся от прошлых запусков локальный vllm-qwen (restart: unless-stopped) останавливается:
+        он не нужен и держит VRAM. vllm-dots — только если GPU нужен самому рантайму (RUNTIME_DEVICE=cuda)."""
         if not url.strip():
             raise StackError("для внешнего LLM задайте LLM_BASE_URL в .env (адрес вида http://хост:порт/v1)")
+        idle = {GPU_SERVICE[RUNTIME]} | ({GPU_SERVICE[INGEST]} if runtime_uses_gpu(self._config) else set())
+        for service in sorted(idle & self.running_services()):
+            self.stop_service(service)
         profiles = [RUNTIME]
         services = list(RUNTIME_APP_SERVICES)
         if mock:

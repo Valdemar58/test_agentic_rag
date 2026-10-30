@@ -179,6 +179,25 @@ def test_up_runtime_with_external_llm_skips_vllm_qwen() -> None:
         stack.up("ingest", external_llm_url="http://spark.test:8000/v1")
 
 
+def test_external_llm_stops_leftover_local_vllm() -> None:
+    """Оставшийся локальный vllm-qwen держит VRAM, хотя LLM на другой машине; с GPU рантайма — и vllm-dots."""
+    running = '[{"Service": "vllm-qwen", "State": "running"}, {"Service": "vllm-dots", "State": "running"}]'
+    config = load_app_config(DEFAULT_CONFIG_PATH)
+    runner = FakeRunner(running=running)
+    Stack(config, runner=runner, gpu_total_mib=RTX_3080_MIB).up(
+        "runtime", external_llm_url="http://spark.test:8000/v1"
+    )
+    removed = [call[-1] for call in runner.calls if "rm" in call]
+    assert removed == ["vllm-qwen"] and "up" in runner.calls[-1]
+
+    gpu_config = config.model_copy(update={"reranker": config.reranker.model_copy(update={"device": "cuda"})})
+    runner = FakeRunner(running=running)
+    Stack(gpu_config, runner=runner, gpu_total_mib=RTX_3080_MIB).up(
+        "runtime", external_llm_url="http://spark.test:8000/v1"
+    )
+    assert [call[-1] for call in runner.calls if "rm" in call] == ["vllm-dots", "vllm-qwen"]
+
+
 def test_agent_ui_does_not_require_local_vllm() -> None:
     """Иначе compose поднимет vllm-qwen как зависимость agent-ui и режим внешнего LLM сломается."""
     compose = yaml.safe_load((DEFAULT_CONFIG_PATH.parent.parent / "docker-compose.yml").read_text("utf-8"))
